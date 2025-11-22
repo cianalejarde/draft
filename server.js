@@ -212,6 +212,127 @@ const calculateNextAvailableDate = async (departmentId) => {
   }
 };
 
+const calculateNextAvailableSlot = async (departmentId) => {
+  try {
+    const { data: department, error } = await supabase
+      .from('department')
+      .select('is_scheduled, available_days, service_type, name')
+      .eq('department_id', departmentId)
+      .single();
+
+    if (error || !department) {
+      console.error('Department not found:', departmentId);
+      return { 
+        isScheduled: false, 
+        nextAvailableDate: null, 
+        isToday: true 
+      };
+    }
+
+    // If not a scheduled subspecialty, return immediate availability
+    if (!department.is_scheduled || department.service_type !== 'subspecialty') {
+      return { 
+        isScheduled: false, 
+        nextAvailableDate: new Date().toISOString().split('T')[0], 
+        isToday: true,
+        departmentName: department.name
+      };
+    }
+
+    // Parse the available days schedule
+    const schedule = department.available_days;
+    if (!schedule || Object.keys(schedule).length === 0) {
+      console.warn('No schedule found for subspecialty department:', department.name);
+      return { 
+        isScheduled: true, 
+        nextAvailableDate: null, 
+        isToday: false,
+        departmentName: department.name 
+      };
+    }
+
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    // Check if today is an available day and still within time window
+    const todayName = daysOfWeek[now.getDay()];
+    if (schedule[todayName]) {
+      const timeSlots = schedule[todayName];
+      const isStillOpen = timeSlots.some(slot => currentTime < slot.end);
+      
+      if (isStillOpen) {
+        // Check current queue count for today
+        const { count: todayQueueCount } = await supabase
+          .from('queue')
+          .select('*', { count: 'exact', head: true })
+          .eq('department_id', departmentId)
+          .eq('visit.visit_date', today);
+
+        return {
+          isScheduled: true,
+          nextAvailableDate: today,
+          isToday: true,
+          queuePosition: (todayQueueCount || 0) + 1,
+          departmentName: department.name,
+          timeSlot: `${timeSlots[0].start}-${timeSlots[timeSlots.length - 1].end}`
+        };
+      }
+    }
+
+    // Find next available date
+    let checkDate = new Date(now);
+    const maxDaysToCheck = 14; // Look ahead 2 weeks
+    
+    for (let i = 1; i <= maxDaysToCheck; i++) {
+      checkDate.setDate(checkDate.getDate() + 1);
+      const dayName = daysOfWeek[checkDate.getDay()];
+      
+      if (schedule[dayName]) {
+        const nextDate = checkDate.toISOString().split('T')[0];
+        
+        // Count existing appointments for this date
+        const { count: futureQueueCount } = await supabase
+          .from('queue')
+          .select('*', { count: 'exact', head: true })
+          .eq('department_id', departmentId)
+          .eq('scheduled_date', nextDate);
+
+        const timeSlots = schedule[dayName];
+        
+        return {
+          isScheduled: true,
+          nextAvailableDate: nextDate,
+          isToday: false,
+          queuePosition: (futureQueueCount || 0) + 1,
+          departmentName: department.name,
+          dayName: dayName,
+          timeSlot: `${timeSlots[0].start}-${timeSlots[timeSlots.length - 1].end}`
+        };
+      }
+    }
+
+    // No available date found within 2 weeks
+    return {
+      isScheduled: true,
+      nextAvailableDate: null,
+      isToday: false,
+      error: 'No available appointments within the next 2 weeks',
+      departmentName: department.name
+    };
+
+  } catch (error) {
+    console.error('Error calculating next available slot:', error);
+    return { 
+      isScheduled: false, 
+      nextAvailableDate: null, 
+      isToday: false,
+      error: error.message 
+    };
+  }
+};
+
 // Email Service
 const sendEmailOTP = async (email, otp, patientName) => {
   try {
@@ -219,25 +340,90 @@ const sendEmailOTP = async (email, otp, patientName) => {
     await transporter.verify();
   
     const mailOptions = {
-      from: emailConfig.auth.user,
+      from: `"CliCare Hospital" <${emailConfig.auth.user}>`,
       to: email,
-      subject: 'CLICARE - Your Verification Code',
+      subject: 'CliCare - Your Verification Code',
       html: `
-        <div style="font-family: Poppins, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">🏥 CliCare Verification Code</h2>
-          <p>Hello ${patientName},</p>
-          <p>Your verification code is:</p>
-          <div style="background: #f3f4f6; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; margin: 20px 0;">
-            ${otp}
-          </div>
-          <p><strong>This code will expire in 5 minutes.</strong></p>
-          <p>If you didn't request this code, please ignore this email.</p>
-          <hr>
-          <p><small>CliCare Hospital Management System</small></p>
-        </div>
-      `
-    };
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+        </head>
+        <body style="margin: 0; padding: 0; background-color: #ffffff; font-family: 'Poppins', sans-serif;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 24px 24px;">
+            
+            <!-- Logo -->
+            <div style="text-align: center; margin-bottom: 24px;">
+              <img src="cid:clicareLogo" alt="CliCare Hospital" style="height: 28px; width: auto;">
+            </div>
 
+            <!-- Greeting -->
+            <p style="color: #27371f; font-size: 15px; font-weight: 500; margin: 0 0 2px 0;">
+              Hello ${patientName},
+            </p>
+            
+            <p style="color: #6b7280; font-size: 14px; font-weight: 300; line-height: 1.5; margin: 0 0 24px 0;">
+              Your verification code is:
+            </p>
+
+            <!-- OTP Code - THE STAR -->
+            <div style="text-align: center; margin: 0 0 20px 0;">
+              <div style="display: inline-block; background: #f9fafb; border-radius: 8px; padding: 10px 20px;">
+                <div style="font-size: 24px; font-weight: 600; letter-spacing: 5px; color: #1a672a; font-family: 'Poppins', sans-serif;">
+                  ${otp}
+                </div>
+              </div>
+            </div>
+
+            <!-- Expiration Notice -->
+            <p style="color: #6b7280; font-size: 13px; font-weight: 400; text-align: center; margin: 0 0 20px 0;">
+              This code will expire in <strong style="color: #27371f;">5 minutes</strong>
+            </p>
+
+            <!-- Divider -->
+            <div style="height: 1px; background: #e5e7eb; margin: 0 0 20px 0;"></div>
+
+            <!-- Security Tips -->
+            <p style="color: #9ca3af; font-size: 12px; font-weight: 500; line-height: 1; margin: 0 0 10px 0;">
+              Security Tips:
+            </p>
+            
+            <p style="color: #9ca3af; font-size: 12px; font-weight: 300; line-height: 1; margin: 0 0 5px 0;">
+              • Never share this code with anyone
+            </p>
+            <p style="color: #9ca3af; font-size: 12px; font-weight: 300; line-height: 1; margin: 0 0 5px 0;">
+              • CliCare staff will never ask for your code
+            </p>
+            <p style="color: #9ca3af; font-size: 12px; font-weight: 300; line-height: 1; margin: 0 0 10px 0;">
+              • This code is valid for one-time use only
+            </p>
+
+            <p style="color: #9ca3af; font-size: 12px; font-weight: 300; line-height: 1.5; margin: 0 0 20px 0;">
+              If you didn't request this code, please ignore this email.
+            </p>
+
+            <!-- Footer -->
+            <div style="text-align: center; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <p style="color: #d1d5db; font-size: 11px; font-weight: 300; line-height: 1.5; margin: 0;">
+                CliCare Hospital Management System<br>
+                This is an automated message. Please do not reply.
+              </p>
+            </div>
+
+          </div>
+        </body>
+        </html>
+      `,
+      attachments: [
+        {
+          filename: 'clicareLogo.png',
+          path: path.join(__dirname, '../src/clicareLogo.png'),
+          cid: 'clicareLogo'
+        }
+      ]
+    };
 
     const result = await transporter.sendMail(mailOptions);
     return result;
@@ -1667,7 +1853,6 @@ app.post('/api/outpatient/send-otp', generalLoginLimiter, async (req, res) => {
 });
 
 // Verify OTP and Login
-// Verify OTP and Login
 app.post('/api/outpatient/verify-otp', generalLoginLimiter, async (req, res) => {
   try {
     const { patientId, contactInfo, otp, deviceType } = req.body;
@@ -1723,32 +1908,74 @@ app.post('/api/outpatient/verify-otp', generalLoginLimiter, async (req, res) => 
       });
     }
 
-    // ✅ NEW: Check if patient has pending queue (only for web login)
     if (deviceType === 'web') {
       const today = new Date().toISOString().split('T')[0];
       
-      const { data: queueData, error: queueError } = await supabase
+      // First check if patient has any completed consultations
+      const { data: completedHistory } = await supabase
         .from('queue')
-        .select(`
-          queue_id,
-          queue_no,
-          status,
-          department!inner(name),
-          visit!inner(visit_date, patient_id)
-        `)
+        .select('queue_id, status, visit!inner(patient_id)')
         .eq('visit.patient_id', patientData.id)
-        .eq('visit.visit_date', today)
-        .in('status', ['waiting', 'in_progress'])
+        .eq('status', 'completed')
+        .limit(1)
         .single();
 
-      if (queueData) {
-        return res.status(403).json({
-          error: 'PENDING_QUEUE',
-          message: 'You are currently in queue and cannot log in until your consultation is completed.',
-          queueNumber: queueData.queue_no,
-          departmentName: queueData.department.name,
-          status: queueData.status
-        });
+      // If no completed history, block if ANY queue exists
+      if (!completedHistory) {
+        const { data: anyQueue } = await supabase
+          .from('queue')
+          .select(`
+            queue_id,
+            queue_no,
+            status,
+            scheduled_date,
+            department!inner(name),
+            visit!inner(visit_date, patient_id)
+          `)
+          .eq('visit.patient_id', patientData.id)
+          .in('status', ['waiting', 'in_progress', 'scheduled'])
+          .limit(1)
+          .single();
+
+        if (anyQueue) {
+          return res.status(403).json({
+            error: 'PENDING_QUEUE',
+            message: anyQueue.status === 'scheduled' 
+              ? 'Please complete your first consultation before logging in.'
+              : 'You are currently in queue. Please complete your consultation before logging in.',
+            queueNumber: anyQueue.queue_no,
+            departmentName: anyQueue.department.name,
+            status: anyQueue.status,
+            scheduledDate: anyQueue.scheduled_date
+          });
+        }
+      }
+      
+      // If has completed history, only block active consultations TODAY
+      if (completedHistory) {
+        const { data: activeQueue } = await supabase
+          .from('queue')
+          .select(`
+            queue_id,
+            queue_no,
+            status,
+            department!inner(name),
+            visit!inner(visit_date, patient_id)
+          `)
+          .eq('visit.patient_id', patientData.id)
+          .eq('visit.visit_date', today)
+          .in('status', ['waiting', 'in_progress'])
+          .single();
+
+        if (activeQueue) {
+          return res.status(403).json({
+            error: 'PENDING_QUEUE',
+            message: 'You have an active consultation today. Please complete it before logging in again.',
+            queueNumber: activeQueue.queue_no,
+            departmentName: activeQueue.department.name,
+            status: activeQueue.status
+          });
+        }
       }
     }
 
@@ -1803,6 +2030,7 @@ app.post('/api/outpatient/verify-otp', generalLoginLimiter, async (req, res) => 
 });
 
 // Check if patient has pending queue
+// Check if patient has pending queue
 app.post('/api/outpatient/check-queue-status', async (req, res) => {
   try {
     const { patientId } = req.body;
@@ -1829,8 +2057,60 @@ app.post('/api/outpatient/check-queue-status', async (req, res) => {
       });
     }
 
-    // Check if this patient has a pending queue today
-    const { data: queueData, error: queueError } = await supabase
+    // ✅ NEW: First check if patient has ANY completed consultations in history
+    const { data: completedHistory, error: historyError } = await supabase
+      .from('queue')
+      .select(`
+        queue_id,
+        status,
+        visit!inner(patient_id)
+      `)
+      .eq('visit.patient_id', patientData.id)
+      .eq('status', 'completed')
+      .limit(1)
+      .single();
+
+    // If patient has NO completed consultations, check for any pending queue
+    if (!completedHistory || historyError) {
+      console.log('⚠️ New patient - checking for any queue status');
+      
+      const { data: anyQueue, error: anyQueueError } = await supabase
+        .from('queue')
+        .select(`
+          queue_id,
+          queue_no,
+          status,
+          scheduled_date,
+          department!inner(name),
+          visit!inner(visit_date, patient_id)
+        `)
+        .eq('visit.patient_id', patientData.id)
+        .in('status', ['waiting', 'in_progress', 'scheduled'])
+        .order('created_time', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (anyQueue) {
+        const statusMessages = {
+          'waiting': 'You are currently in queue. Please complete your consultation.',
+          'in_progress': 'Your consultation is in progress. Please complete it first.',
+          'scheduled': 'Please complete your first consultation before logging in.'
+        };
+
+        return res.json({
+          success: true,
+          hasPendingQueue: true,
+          queueNumber: anyQueue.queue_no,
+          departmentName: anyQueue.department.name,
+          status: anyQueue.status,
+          scheduledDate: anyQueue.scheduled_date,
+          message: statusMessages[anyQueue.status]
+        });
+      }
+    }
+
+    // ✅ Patient has completed history - only block if there's an ACTIVE consultation TODAY
+    const { data: activeTodayQueue, error: todayError } = await supabase
       .from('queue')
       .select(`
         queue_id,
@@ -1844,24 +2124,18 @@ app.post('/api/outpatient/check-queue-status', async (req, res) => {
       .in('status', ['waiting', 'in_progress'])
       .single();
 
-    if (queueError && queueError.code !== 'PGRST116') {
-      console.error('Queue check error:', queueError);
-      return res.json({
-        success: true,
-        hasPendingQueue: false
-      });
-    }
-
-    if (queueData) {
+    if (activeTodayQueue) {
       return res.json({
         success: true,
         hasPendingQueue: true,
-        queueNumber: queueData.queue_no,
-        departmentName: queueData.department.name,
-        status: queueData.status
+        queueNumber: activeTodayQueue.queue_no,
+        departmentName: activeTodayQueue.department.name,
+        status: activeTodayQueue.status,
+        message: 'You have an active consultation today. Please complete it first.'
       });
     }
 
+    // ✅ All clear - allow login
     return res.json({
       success: true,
       hasPendingQueue: false
@@ -2097,7 +2371,7 @@ app.post('/api/check-duplicate', async (req, res) => {
 
 app.post('/api/patient/register', async (req, res) => {
   try {
-    console.log('📝 Patient registration request:', req.body);
+    console.log('📥 Patient registration request:', req.body);
           
     const {
       name, birthday, age, sex, address, contact_no, email,
@@ -2123,7 +2397,7 @@ app.post('/api/patient/register', async (req, res) => {
 
     const isRoutineCareOnly = hasOnlyRoutineCareSymptoms(symptoms);
 
-    // Handle temp registration if temp_id is provided
+    // ✅ ORIGINAL: Handle temp registration with validation
     let tempRegData = null;
     if (temp_id) {
       console.log('🔄 Processing temp registration with temp_id:', temp_id);
@@ -2188,6 +2462,7 @@ app.post('/api/patient/register', async (req, res) => {
     if (patientError) {
       console.error('❌ Patient registration error:', patientError);
         
+      // ✅ ORIGINAL: Revert temp registration status if patient creation fails
       if (temp_id) {
         console.log('🔄 Reverting temp registration status due to patient creation failure');
         await supabase
@@ -2233,7 +2508,7 @@ app.post('/api/patient/register', async (req, res) => {
         visit_date: today,
         visit_time: currentTime,
         appointment_type: 'Walk-in Registration',
-        symptoms: Array.isArray(symptoms) ? symptoms.join(', ') : symptoms,
+        symptoms: Array.isArray(symptoms) ? symptoms : symptoms.join(', '),
         duration: isRoutineCareOnly ? null : duration,
         severity: isRoutineCareOnly ? null : severity,
         previous_treatment: previous_treatment || null,
@@ -2257,55 +2532,90 @@ app.post('/api/patient/register', async (req, res) => {
     const symptomsList = Array.isArray(symptoms) ? symptoms : symptoms.split(', ');
     const deptId = await assignDepartmentBySymptoms(symptomsList, patientData.age);
 
-    // ✅ NEW: Get next available date with time slot
-    const nextAvailable = await calculateNextAvailableDate(deptId);
-    console.log('📅 Next available appointment:', nextAvailable);
+    // ✅ NEW: Calculate next available slot (handles both general and subspecialty)
+    const availabilityInfo = await calculateNextAvailableSlot(deptId);
 
     const { data: deptData } = await supabase
       .from('department')
-      .select('name')
+      .select('name, is_scheduled, service_type')
       .eq('department_id', deptId)
       .single();
 
     const recommendedDepartment = deptData?.name || 'Internal Medicine';
     console.log('✅ Assigned department:', recommendedDepartment);
 
-    // Create queue entry
-    const { data: existingQueues } = await supabase
-      .from('queue')
-      .select('queue_no, visit!inner(visit_date)')
-      .eq('department_id', deptId)
-      .eq('visit.visit_date', today);
+    // ✅ NEW: Handle queue creation based on department type
+    let queueData = null;
+    let queueNumber = null;
+    let appointmentStatus = 'immediate';
 
-    const maxQueueNo = existingQueues?.length > 0 
-      ? Math.max(...existingQueues.map(q => q.queue_no)) 
-      : 0;
-    const queueNumber = maxQueueNo + 1;
+    if (!availabilityInfo.isScheduled || availabilityInfo.isToday) {
+      // GENERAL DEPARTMENT or SUBSPECIALTY with availability TODAY
+      const { data: existingQueues } = await supabase
+        .from('queue')
+        .select('queue_no, visit!inner(visit_date)')
+        .eq('department_id', deptId)
+        .eq('visit.visit_date', today);
 
-    const { data: queueData, error: queueError } = await supabase
-      .from('queue')
-      .insert({
-        visit_id: visitData.visit_id,
-        department_id: deptId,
-        queue_no: queueNumber,
-        status: 'waiting'
-      })
-      .select()
-      .single();
+      const maxQueueNo = existingQueues?.length > 0 
+        ? Math.max(...existingQueues.map(q => q.queue_no)) 
+        : 0;
+      queueNumber = maxQueueNo + 1;
 
-    if (queueError) {
-      console.error('⚠️ Queue creation error:', queueError);
-    } else {
-      console.log('✅ Queue created successfully:', queueNumber);
+      const { data: createdQueue, error: queueError } = await supabase
+        .from('queue')
+        .insert({
+          visit_id: visitData.visit_id,
+          department_id: deptId,
+          queue_no: queueNumber,
+          status: 'waiting',
+          scheduled_date: today
+        })
+        .select()
+        .single();
+
+      if (!queueError) {
+        queueData = createdQueue;
+        console.log('✅ Queue created successfully:', queueNumber);
+      } else {
+        console.error('⚠️ Queue creation error:', queueError);
+      }
+
+      appointmentStatus = 'immediate';
+
+    } else if (availabilityInfo.isScheduled && availabilityInfo.nextAvailableDate) {
+      // SUBSPECIALTY with FUTURE appointment
+      queueNumber = availabilityInfo.queuePosition;
+
+      const { data: createdQueue, error: queueError } = await supabase
+        .from('queue')
+        .insert({
+          visit_id: visitData.visit_id,
+          department_id: deptId,
+          queue_no: queueNumber,
+          status: 'scheduled',
+          scheduled_date: availabilityInfo.nextAvailableDate
+        })
+        .select()
+        .single();
+
+      if (!queueError) {
+        queueData = createdQueue;
+        console.log('✅ Scheduled queue created for:', availabilityInfo.nextAvailableDate);
+      } else {
+        console.error('⚠️ Queue creation error:', queueError);
+      }
+
+      appointmentStatus = 'scheduled';
     }
 
-    // ✅ NEW: If temp_id exists, update it with next_available_date and time
+    // ✅ ORIGINAL: Update temp registration with next available date
     if (temp_id) {
       const { error: updateTempError } = await supabase
         .from('pre_registration')
         .update({ 
-          next_available_date: nextAvailable.date,
-          next_available_time: nextAvailable.timeSlot,
+          next_available_date: availabilityInfo.nextAvailableDate || today,
+          next_available_time: availabilityInfo.timeSlot || 'anytime',
           department_id: deptId,
           updated_at: new Date().toISOString() 
         })
@@ -2314,11 +2624,11 @@ app.post('/api/patient/register', async (req, res) => {
       if (updateTempError) {
         console.error('❌ Failed to update temp registration with schedule info:', updateTempError);
       } else {
-        console.log('✅ Updated temp registration with next available date:', nextAvailable.date);
+        console.log('✅ Updated temp registration with next available date');
       }
     }
 
-    // Delete temp registration after successful patient creation
+    // ✅ ORIGINAL: Delete temp registration after successful patient creation
     if (temp_id && patientData) {
       console.log('🗑️ Deleting temp registration after successful patient creation');
       
@@ -2334,7 +2644,7 @@ app.post('/api/patient/register', async (req, res) => {
       }
     }
 
-    // Prepare response
+    // ✅ NEW: Enhanced response with scheduling information
     const response = {
       success: true,
       patient: patientData,
@@ -2342,12 +2652,23 @@ app.post('/api/patient/register', async (req, res) => {
       queue: queueData,
       recommendedDepartment: recommendedDepartment,
       queue_number: queueNumber,
-      estimated_wait: '15-30 minutes',
+      estimated_wait: appointmentStatus === 'immediate' ? '15-30 minutes' : 'Scheduled appointment',
       is_routine_care: isRoutineCareOnly,
-      next_available: nextAvailable, // ✅ NEW: Include in response
+      appointment_status: appointmentStatus,
+      scheduling_info: {
+        is_scheduled_department: availabilityInfo.isScheduled,
+        appointment_date: availabilityInfo.nextAvailableDate,
+        is_today: availabilityInfo.isToday,
+        day_name: availabilityInfo.dayName,
+        time_slot: availabilityInfo.timeSlot,
+        message: appointmentStatus === 'scheduled' 
+          ? `Your appointment is scheduled for ${availabilityInfo.dayName}, ${new Date(availabilityInfo.nextAvailableDate).toLocaleDateString()}. Your queue number will be ${queueNumber} on that day.`
+          : `You are now in queue. Your queue number is ${queueNumber}.`
+      },
       message: 'Patient registered successfully'
     };
 
+    // ✅ ORIGINAL: Include temp registration info if it was processed
     if (tempRegData) {
       response.temp_registration_processed = true;
       response.original_temp_id = tempRegData.temp_patient_id;
@@ -2360,6 +2681,7 @@ app.post('/api/patient/register', async (req, res) => {
   } catch (error) {
     console.error('💥 Registration error:', error);
     
+    // ✅ ORIGINAL: Revert temp registration status on error
     if (req.body.temp_id) {
       try {
         await supabase
@@ -2378,6 +2700,49 @@ app.post('/api/patient/register', async (req, res) => {
     });
   }
 });
+
+const activateScheduledQueues = async () => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Find all 'scheduled' queues where scheduled_date is today
+    const { data: scheduledQueues, error: fetchError } = await supabase
+      .from('queue')
+      .select('queue_id, department_id')
+      .eq('status', 'scheduled')
+      .eq('scheduled_date', today);
+
+    if (fetchError || !scheduledQueues || scheduledQueues.length === 0) {
+      return;
+    }
+
+    console.log(`✅ Activating ${scheduledQueues.length} scheduled appointments for today`);
+
+    // Update status from 'scheduled' to 'waiting'
+    const { error: updateError } = await supabase
+      .from('queue')
+      .update({ status: 'waiting' })
+      .eq('status', 'scheduled')
+      .eq('scheduled_date', today);
+
+    if (updateError) {
+      console.error('Failed to activate scheduled queues:', updateError);
+    } else {
+      console.log('✅ Successfully activated scheduled queues for today');
+    }
+
+  } catch (error) {
+    console.error('Activate scheduled queues error:', error);
+  }
+};
+
+setInterval(activateScheduledQueues, 60 * 60 * 1000);
+activateScheduledQueues();
+
+module.exports = {
+  calculateNextAvailableSlot,
+  activateScheduledQueues
+};
 
 // Check pending queue for new patient (by name, DOB, address)
 app.post('/api/check-pending-queue', async (req, res) => {
@@ -4586,74 +4951,113 @@ app.post('/api/generate-health-assessment-qr', authenticateToken, async (req, re
         to: patientEmail,
         subject: 'CliCare - Your Health Assessment QR Code',
         html: `
-          <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">
-            <div style="background-color: white; border-radius: 10px; padding: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-              <div style="text-align: center; margin-bottom: 30px;">
-                <h1 style="color: #2563eb; margin: 0; font-size: 28px;">CliCare Hospital</h1>
-                <p style="color: #6b7280; margin: 5px 0 0 0;">Your Health Assessment QR Code</p>
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+          </head>
+
+          <body style="margin:0; padding:0; background:#ffffff; font-family:'Poppins', sans-serif;">
+            <div style="max-width:600px; margin:0 auto; padding:24px 24px;">
+
+              <!-- LOGO -->
+              <div style="text-align:center; margin-bottom:24px;">
+                <img src="cid:clicareLogo" alt="CliCare Hospital" style="height:28px; width:auto;">
               </div>
 
-              <div style="margin-bottom: 25px;">
-                <h2 style="color: #27371f; margin: 0 0 10px 0;">Hello ${patientName},</h2>
-                <p style="color: #4b5563; line-height: 1.6; margin: 0;">
-                  Your health assessment has been successfully submitted. Please present the QR code below when you arrive at the hospital for faster check-in.
-                </p>
-              </div>
+              <!-- TITLE -->
+              <p style="color:#27371f; font-size:16px; font-weight:600; text-align:center; margin:0 0 4px 0;">
+                Health Assessment Submitted
+              </p>
+              <p style="color:#6b7280; font-size:14px; font-weight:300; text-align:center; margin:0 0 32px 0;">
+                Your QR code is ready.
+              </p>
 
-              <div style="background-color: #f3f4f6; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
-                <h3 style="color: #27371f; margin: 0 0 15px 0; font-size: 18px;">Assessment Details</h3>
-                <div style="display: grid; gap: 10px;">
-                  <div><strong>Assessment ID:</strong> ${temp_assessment_id}</div>
-                  <div><strong>Patient ID:</strong> ${assessmentData.outPatient.patient_id}</div>
-                  <div><strong>Recommended Department:</strong> ${recommendedDepartment}</div>
-                  <div><strong>Preferred Date:</strong> ${appointmentDate}</div>
-                  <div><strong>Preferred Time:</strong> ${appointmentTime}</div>
-                  <div><strong>Symptoms:</strong> ${assessmentData.symptoms || 'Not specified'}</div>
-                  <div><strong>Severity:</strong> ${assessmentData.severity || 'Not specified'}</div>
+              <!-- GREETING -->
+              <p style="color:#27371f; font-size:15px; font-weight:500; margin:0 0 6px 0;">
+                Hello ${patientName},
+              </p>
+              <p style="color:#6b7280; font-size:14px; font-weight:300; line-height:1.6; margin:0 0 24px 0;">
+                Your health assessment has been successfully submitted. Please present the QR code below when you arrive at the hospital for faster check-in.
+              </p>
+
+              <!-- QR CODE BLOCK -->
+              <div style="text-align:center; margin:0 0 24px 0;">
+                <div style="display:inline-block; background:#f9fafb; border-radius:12px; padding:20px 24px; border:1px solid #e5e7eb;">
+                  <img src="cid:healthqrcode" alt="Health Assessment QR Code" style="max-width:200px; height:auto; border-radius:6px;">
+                  <p style="color:#6b7280; font-size:13px; font-weight:400; margin:12px 0 0 0;">
+                    Present this QR code at the kiosk or reception desk
+                  </p>
                 </div>
               </div>
 
-              <div style="text-align: center; margin-bottom: 25px;">
-                <h3 style="color: #27371f; margin: 0 0 15px 0;">Your QR Code</h3>
-                <div style="background-color: #ffffff; border: 2px solid #e5e7eb; border-radius: 10px; padding: 20px; display: inline-block;">
-                  <img src="cid:healthqrcode" alt="Health Assessment QR Code" style="max-width: 200px; height: auto;" />
-                </div>
-                <p style="color: #6b7280; font-size: 14px; margin: 10px 0 0 0;">
-                  Present this QR code at the hospital kiosk or reception desk
+              <!-- DIVIDER -->
+              <div style="height:1px; background:#e5e7eb; margin:0 0 32px 0;"></div>
+
+              <!-- DETAILS HEADER -->
+              <p style="color:#27371f; font-size:14px; font-weight:500; margin:0 0 12px 0;">
+                Assessment Details:
+              </p>
+
+              <!-- DETAILS BOX -->
+              <div style="background:#f9fafb; padding:16px; border-radius:8px; margin:0 0 32px 0;">
+                <p style="color:#6b7280; margin:0; font-size:14px; line-height:1.8;">
+                  <strong style="color:#27371f;">Assessment ID:</strong> ${temp_assessment_id}<br>
+                  <strong style="color:#27371f;">Patient ID:</strong> ${assessmentData.outPatient.patient_id}<br>
+                  <strong style="color:#27371f;">Recommended Department:</strong> ${recommendedDepartment}<br>
+                  <strong style="color:#27371f;">Preferred Date:</strong> ${appointmentDate}<br>
+                  <strong style="color:#27371f;">Preferred Time:</strong> ${appointmentTime}<br>
+                  <strong style="color:#27371f;">Symptoms:</strong> ${assessmentData.symptoms || 'Not specified'}<br>
+                  <strong style="color:#27371f;">Severity:</strong> ${assessmentData.severity || 'Not specified'}
                 </p>
               </div>
 
-              <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 15px; margin-bottom: 20px;">
-                <h4 style="color: #1e40af; margin: 0 0 10px 0;">Instructions</h4>
-                <ul style="color: #1e40af; margin: 0; padding-left: 20px;">
-                  <li>Present this QR code when you arrive at CliCare Hospital</li>
-                  <li>You can scan this at the kiosk or show it to the reception staff</li>
-                  <li>This QR code is valid until ${new Date(assessmentData.expires_at).toLocaleDateString()}</li>
+              <!-- NEXT STEPS HEADER -->
+              <p style="color:#27371f; font-size:14px; font-weight:500; margin:0 0 12px 0;">
+                What to do next:
+              </p>
+
+              <!-- NEXT STEPS BOX -->
+              <div style="background:#f9fafb; padding:16px; border-radius:8px; margin:0 0 32px 0;">
+                <ol style="color:#6b7280; font-size:14px; padding-left:18px; margin:0; line-height:1.7;">
+                  <li>Present this QR code when you arrive</li>
+                  <li>Scan it at the kiosk or show it to reception staff</li>
+                  <li>Valid until <strong>${new Date(assessmentData.expires_at).toLocaleDateString()}</strong></li>
                   <li>Bring a valid ID for verification</li>
-                </ul>
+                </ol>
               </div>
 
-              <div style="background-color: #fef3cd; border-left: 4px solid #f59e0b; padding: 15px; margin-bottom: 20px;">
-                <h4 style="color: #92400e; margin: 0 0 10px 0;">Important</h4>
-                <p style="color: #92400e; margin: 0; font-size: 14px;">
-                  This QR code is personalized for <strong>${patientName}</strong> (Patient ID: ${assessmentData.outPatient.patient_id}). 
-                  It cannot be used by other patients and will expire on ${new Date(assessmentData.expires_at).toLocaleDateString()}.
+              <!-- IMPORTANT -->
+              <p style="color:#dc2626; font-size:13px; font-weight:500; margin:0 0 6px 0;">
+                Important
+              </p>
+
+              <p style="color:#9ca3af; font-size:12px; line-height:1.6; margin:0 0 32px 0;">
+                This QR code is personalized for <strong style="color:#27371f;">${patientName}</strong> (Patient ID: ${assessmentData.outPatient.patient_id}).  
+                It cannot be used by other patients and will expire on  
+                <strong style="color:#27371f;">${new Date(assessmentData.expires_at).toLocaleDateString()}</strong>.
+              </p>
+
+              <!-- FOOTER -->
+              <div style="text-align:center; padding-top:20px; border-top:1px solid #e5e7eb;">
+                <p style="color:#d1d5db; font-size:11px; font-weight:300; margin:0;">
+                  CliCare Hospital Management System<br>
+                  This is an automated message. Please do not reply.
                 </p>
               </div>
 
-              <div style="text-align: center; border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 30px;">
-                <p style="color: #6b7280; font-size: 14px; margin: 0;">
-                  If you have any questions, please contact CliCare Hospital<br>
-                  This is an automated message, please do not reply to this email.
-                </p>
-                <p style="color: #9ca3af; font-size: 12px; margin: 10px 0 0 0;">
-                  CliCare Hospital Management System
-                </p>
-              </div>
             </div>
-          </div>
+          </body>
+          </html>
         `,
         attachments: [
+          {
+            filename: 'clicareLogo.png',
+            path: path.join(__dirname, '../src/clicareLogo.png'),
+            cid: 'clicareLogo'
+          },
           {
             filename: 'health-assessment-qr.png',
             content: qrCodeBuffer,
@@ -4762,69 +5166,87 @@ app.post('/api/generate-qr-email', async (req, res) => {
     // Step 3: Prepare email
     console.log('Step 3: Preparing email...');
     const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f5f5f5; padding: 20px;">
-        <div style="background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-          <div style="background: linear-gradient(135deg, #4285f4 0%, #1a73e8 100%); color: white; padding: 30px; text-align: center;">
-            <h1 style="margin: 0; font-size: 28px;">🏥 CliCare Hospital</h1>
-            <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Registration Confirmation</p>
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+      </head>
+
+      <body style="margin: 0; padding: 0; background-color: #ffffff; font-family: 'Poppins', sans-serif;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 24px 24px;">
+
+          <!-- Logo -->
+          <div style="text-align: center; margin-bottom: 24px;">
+            <img src="cid:clicareLogo" alt="CliCare Hospital" style="height: 28px; width: auto;">
           </div>
-          
-          <div style="padding: 30px;">
-            <h2 style="color: #333; margin-top: 0;">Hello ${patientName},</h2>
-            <p style="color: #666; line-height: 1.6; font-size: 16px;">Your registration has been completed successfully! Please present the QR code below when you arrive at the hospital.</p>
-            
-            <div style="background: #f8f9fa; padding: 30px; border-radius: 8px; text-align: center; margin: 25px 0; border: 2px dashed #dee2e6;">
-              <img src="cid:qrcode" alt="Registration QR Code" style="max-width: 200px; height: auto; border: 1px solid #ddd; border-radius: 4px;">
-              <p style="color: #666; font-size: 14px; margin: 15px 0 0 0; font-weight: 500;">Present this QR code at registration</p>
-            </div>
-            
-            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0;">
-              <h3 style="color: #1a73e8; margin-top: 0; font-size: 18px;">📋 Appointment Details</h3>
-              <table style="width: 100%; border-collapse: collapse;">
-                <tr style="border-bottom: 1px solid #eee;">
-                  <td style="padding: 10px 0; color: #666; font-weight: 600;">Department:</td>
-                  <td style="padding: 10px 0; color: #333;">${qrData.department || 'General Practice'}</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #eee;">
-                  <td style="padding: 10px 0; color: #666; font-weight: 600;">Date:</td>
-                  <td style="padding: 10px 0; color: #333;">${qrData.scheduledDate || 'To be confirmed'}</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #eee;">
-                  <td style="padding: 10px 0; color: #666; font-weight: 600;">Time:</td>
-                  <td style="padding: 10px 0; color: #333;">${qrData.preferredTime || 'To be confirmed'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 10px 0; color: #666; font-weight: 600;">Temp ID:</td>
-                  <td style="padding: 10px 0; color: #333; font-family: monospace;">${qrData.tempPatientId || 'N/A'}</td>
-                </tr>
-              </table>
-            </div>
-            
-            <div style="background: #e3f2fd; padding: 20px; border-radius: 8px; border-left: 4px solid #2196f3;">
-              <h4 style="margin-top: 0; color: #1565c0; font-size: 16px;">📝 What to do next:</h4>
-              <ol style="color: #666; margin: 10px 0 0 0; padding-left: 20px; line-height: 1.6;">
-                <li>Arrive 15 minutes before your scheduled time</li>
-                <li>Go directly to the registration desk</li>
-                <li>Show this QR code to the staff</li>
-                <li>Wait for your queue number to be called</li>
-              </ol>
-            </div>
-            
-            <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
-              <p style="color: #999; font-size: 12px; margin: 0;">
-                This is an automated message from CliCare Hospital<br>
-                Please do not reply to this email
+
+          <!-- Greeting -->
+          <p style="color: #27371f; font-size: 15px; font-weight: 500; margin: 0 0 6px 0;">
+            Hello ${patientName},
+          </p>
+
+          <p style="color: #6b7280; font-size: 14px; font-weight: 300; line-height: 1.5; margin: 0 0 24px 0;">
+            Your registration has been successfully recorded. Please present the QR code below upon arriving at the hospital.
+          </p>
+
+          <!-- QR CODE BLOCK -->
+          <div style="text-align: center; margin: 0 0 24px 0;">
+            <div style="display: inline-block; background: #f9fafb; border-radius: 8px; padding: 16px 20px;">
+              <img src="cid:qrcode" alt="QR Code" style="max-width: 200px; height: auto; border-radius: 6px;">
+              <p style="color: #6b7280; font-size: 13px; font-weight: 400; margin: 12px 0 0 0;">
+                Show this QR code to the registration staff
               </p>
             </div>
           </div>
+
+          <!-- Appointment Details Title -->
+          <p style="color: #27371f; font-size: 14px; font-weight: 500; margin: 0 0 12px 0;">
+            Appointment Details:
+          </p>
+
+          <!-- APPOINTMENT DETAILS LIST -->
+          <div style="background: #f9fafb; padding: 16px; border-radius: 8px; margin: 0 0 24px 0;">
+            <p style="color: #6b7280; margin: 0; font-size: 14px; line-height: 1.8;">
+              <strong style="color: #27371f;">Department:</strong> ${qrData.department || 'General Practice'}<br>
+              <strong style="color: #27371f;">Date:</strong> ${qrData.scheduledDate || 'To be confirmed'}<br>
+              <strong style="color: #27371f;">Time:</strong> ${qrData.preferredTime || 'To be confirmed'}<br>
+              <strong style="color: #27371f;">Temporary Patient ID:</strong> ${qrData.tempPatientId || 'N/A'}
+            </p>
+          </div>
+
+          <!-- NEXT STEPS -->
+          <p style="color: #27371f; font-size: 14px; font-weight: 500; margin: 0 0 12px 0;">
+            What to do next:
+          </p>
+
+          <div style="background: #f9fafb; padding: 16px; border-radius: 8px; margin: 0 0 24px 0;">
+            <ol style="color: #6b7280; font-size: 14px; padding-left: 18px; margin: 0; line-height: 1.7;">
+              <li>Arrive 15 minutes before your scheduled time</li>
+              <li>Go directly to the registration desk</li>
+              <li>Present the QR code</li>
+              <li>Wait for your queue number to be called</li>
+            </ol>
+          </div>
+
+          <!-- FOOTER -->
+          <div style="text-align: center; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            <p style="color: #d1d5db; font-size: 11px; font-weight: 300; line-height: 1.5; margin: 0;">
+              CliCare Hospital Management System<br>
+              This is an automated message. Please do not reply.
+            </p>
+          </div>
+
         </div>
-      </div>
+      </body>
+      </html>
     `;
 
     // Step 4: Send email
     console.log('Step 4: Sending email to:', patientEmail);
     try {
-      const transporter = nodemailer.createTransport({
+      const transporter = nodemailer.createTransporter({
         service: 'gmail',
         auth: {
           user: process.env.EMAIL_USER,
@@ -4842,6 +5264,11 @@ app.post('/api/generate-qr-email', async (req, res) => {
         subject: `Your CliCare Registration QR Code - ${patientName}`,
         html: emailHtml,
         attachments: [
+          {
+            filename: 'clicareLogo.png',
+            path: path.join(__dirname, '../src/clicareLogo.png'),
+            cid: 'clicareLogo'
+          },
           {
             filename: 'qr-code.png',
             content: qrCodeBuffer,
@@ -6593,6 +7020,46 @@ app.get('/api/queue/display/:departmentId', async (req, res) => {
       success: false, 
       error: 'Internal server error' 
     });
+  }
+});
+
+app.get('/api/queue/by-date/:departmentId/:date', async (req, res) => {
+  try {
+    const { departmentId, date } = req.params;
+
+    const { data: queueData, error } = await supabase
+      .from('queue')
+      .select(`
+        queue_id,
+        queue_no,
+        status,
+        scheduled_date,
+        visit!inner(
+          visit_id,
+          visit_date,
+          outpatient!inner(
+            patient_id,
+            name
+          )
+        )
+      `)
+      .eq('department_id', departmentId)
+      .eq('scheduled_date', date)
+      .order('queue_no', { ascending: true });
+
+    if (error) {
+      return res.status(500).json({ error: 'Failed to fetch queue data' });
+    }
+
+    res.json({
+      success: true,
+      queue: queueData || [],
+      totalInQueue: queueData?.length || 0
+    });
+
+  } catch (error) {
+    console.error('Queue fetch error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
