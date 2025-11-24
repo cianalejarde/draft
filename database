@@ -1,0 +1,1219 @@
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
+
+GRANT USAGE, CREATE ON SCHEMA public TO anon, authenticated, service_role, postgres;
+GRANT ALL ON SCHEMA public TO postgres;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public 
+    GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public 
+    GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public 
+    GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+
+CREATE TABLE public.department (
+    department_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    floor_plan_image TEXT,
+    floor_plan_image_type VARCHAR(10) DEFAULT 'png',
+    status VARCHAR(20) DEFAULT 'active',
+    queue_color VARCHAR(50),
+    is_scheduled BOOLEAN DEFAULT FALSE,
+    available_days JSONB,
+    service_type VARCHAR(50) DEFAULT 'general',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.admin (
+    id SERIAL PRIMARY KEY,
+    healthadmin_id VARCHAR(20) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    position VARCHAR(100),
+    contact_no VARCHAR(20),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.staff (
+    id SERIAL PRIMARY KEY,
+    staff_id VARCHAR(20) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    role VARCHAR(50) NOT NULL,
+    specialization VARCHAR(100),
+    department_id INTEGER REFERENCES public.department(department_id),
+    license_no VARCHAR(50),
+    contact_no VARCHAR(20),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_login TIMESTAMP WITH TIME ZONE,
+    is_online BOOLEAN DEFAULT FALSE,
+    last_activity TIMESTAMP WITH TIME ZONE
+);
+
+CREATE TABLE public.pre_registration (
+    temp_id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    birthday DATE,
+    age INTEGER,
+    sex VARCHAR(10) CHECK (sex IN ('Male', 'Female', 'Other')),
+    address TEXT,
+    contact_no VARCHAR(20),
+    email VARCHAR(255),
+    qr_code VARCHAR(100),
+    created_date DATE DEFAULT CURRENT_DATE,
+    symptoms TEXT,
+    emergency_contact_name VARCHAR(200),
+    emergency_contact_relationship VARCHAR(50),
+    emergency_contact_no VARCHAR(20),
+    duration VARCHAR(100),
+    severity VARCHAR(50),
+    previous_treatment TEXT,
+    allergies TEXT,
+    medications TEXT,
+    preferred_date DATE,
+    preferred_time_slot VARCHAR(50),
+    scheduled_date DATE,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(20) DEFAULT 'pending',
+    temp_patient_id VARCHAR(20) UNIQUE,
+    next_available_date DATE,
+    next_available_time VARCHAR(20),
+    department_id INTEGER REFERENCES public.department(department_id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.outpatient (
+    id SERIAL PRIMARY KEY,
+    patient_id VARCHAR(20) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    birthday DATE,
+    age INTEGER,
+    sex VARCHAR(10) CHECK (sex IN ('Male', 'Female', 'Other')),
+    address TEXT,
+    contact_no VARCHAR(20),
+    email VARCHAR(255),
+    registration_date DATE DEFAULT CURRENT_DATE,
+    temp_id INTEGER REFERENCES public.pre_registration(temp_id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.emergency_contact (
+    emergency_id SERIAL PRIMARY KEY,
+    patient_id INTEGER REFERENCES public.outpatient(id),
+    name VARCHAR(200) NOT NULL,
+    contact_number VARCHAR(20) NOT NULL,
+    relationship VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.visit (
+    visit_id SERIAL PRIMARY KEY,
+    patient_id INTEGER REFERENCES public.outpatient(id),
+    visit_date DATE DEFAULT CURRENT_DATE,
+    visit_time TIME DEFAULT CURRENT_TIME,
+    appointment_type VARCHAR(50),
+    symptoms TEXT,
+    duration VARCHAR(100),
+    severity VARCHAR(50),
+    previous_treatment TEXT,
+    allergies TEXT,
+    medications TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================================
+-- ENHANCED QUEUE TABLE WITH SCHEDULED_DATE COLUMN
+-- ============================================================================
+CREATE TABLE public.queue (
+    queue_id SERIAL PRIMARY KEY,
+    visit_id INTEGER REFERENCES public.visit(visit_id),
+    department_id INTEGER REFERENCES public.department(department_id),
+    queue_no INTEGER NOT NULL,
+    status VARCHAR(20) DEFAULT 'waiting',
+    scheduled_date DATE DEFAULT CURRENT_DATE,
+    created_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+COMMENT ON COLUMN public.queue.scheduled_date IS 
+'The date when this queue entry becomes active. For general departments this equals visit_date. For subspecialty departments this is the scheduled appointment date.';
+
+CREATE TABLE public.diagnosis (
+    diagnosis_id SERIAL PRIMARY KEY,
+    visit_id INTEGER REFERENCES public.visit(visit_id),
+    patient_id INTEGER REFERENCES public.outpatient(id),
+    staff_id INTEGER REFERENCES public.staff(id),
+    diagnosis_code VARCHAR(20),
+    diagnosis_description TEXT NOT NULL,
+    diagnosis_type VARCHAR(50),
+    severity VARCHAR(20),
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.lab_request (
+    request_id SERIAL PRIMARY KEY,
+    visit_id INTEGER REFERENCES public.visit(visit_id),
+    staff_id INTEGER REFERENCES public.staff(id),
+    test_type VARCHAR(100) NOT NULL,
+    due_date DATE,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.lab_result (
+    result_id SERIAL PRIMARY KEY,
+    request_id INTEGER REFERENCES public.lab_request(request_id),
+    staff_id INTEGER REFERENCES public.staff(id),
+    patient_id INTEGER REFERENCES public.outpatient(id),
+    file_path TEXT,
+    upload_date DATE DEFAULT CURRENT_DATE,
+    results JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.medical_record (
+    record_id SERIAL PRIMARY KEY,
+    patient_id INTEGER REFERENCES public.outpatient(id),
+    visit_id INTEGER REFERENCES public.visit(visit_id),
+    result_id INTEGER REFERENCES public.lab_result(result_id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.otp_verification (
+    id SERIAL PRIMARY KEY,
+    patient_id VARCHAR(20) NOT NULL,
+    contact_info VARCHAR(255) NOT NULL,
+    contact_type VARCHAR(10) NOT NULL,
+    otp_code VARCHAR(6) NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE,
+    attempts INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.symptoms (
+    symptom_id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(100) NOT NULL,
+    department_id INTEGER REFERENCES public.department(department_id),
+    age_group VARCHAR(20) DEFAULT 'all',
+    priority VARCHAR(20) DEFAULT 'normal',
+    is_active BOOLEAN DEFAULT TRUE,
+    is_routine_care BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.health_questionnaire (
+    assessment_id SERIAL PRIMARY KEY,
+    patient_id INTEGER REFERENCES public.outpatient(id) NOT NULL,
+    temp_assessment_id VARCHAR(20) UNIQUE NOT NULL,
+    symptoms TEXT,
+    duration VARCHAR(100),
+    severity VARCHAR(50),
+    previous_treatment TEXT,
+    allergies TEXT,
+    medications TEXT,
+    preferred_date DATE,
+    preferred_time_slot VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'pending',
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.symptom_department (
+    mapping_id SERIAL PRIMARY KEY,
+    symptom_name VARCHAR(200) NOT NULL,
+    department_id INTEGER REFERENCES public.department(department_id),
+    priority INTEGER DEFAULT 1,
+    age_min INTEGER DEFAULT 0,
+    age_max INTEGER DEFAULT 999,
+    conditions JSONB,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE public.navigation_steps (
+    step_id SERIAL PRIMARY KEY,
+    department_id INTEGER REFERENCES public.department(department_id),
+    step_order INTEGER NOT NULL,
+    location_name VARCHAR(200) NOT NULL,
+    description TEXT NOT NULL,
+    floor_number VARCHAR(20),
+    room_numbers VARCHAR(100),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(department_id, step_order)
+);
+
+CREATE TABLE public.time_slots (
+    slot_id SERIAL PRIMARY KEY,
+    slot_name VARCHAR(50) NOT NULL,
+    display_label VARCHAR(100) NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE public.relationship_types (
+    id SERIAL PRIMARY KEY,
+    relationship_name VARCHAR(50) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE public.severity_levels (
+    id SERIAL PRIMARY KEY,
+    level_name VARCHAR(50) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE public.duration_options (
+    id SERIAL PRIMARY KEY,
+    duration_text VARCHAR(100) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- ============================================================================
+-- INDEXES (INCLUDING NEW QUEUE INDEXES)
+-- ============================================================================
+CREATE INDEX idx_staff_staff_id ON public.staff(staff_id);
+CREATE INDEX idx_staff_role ON public.staff(role);
+CREATE INDEX idx_staff_department ON public.staff(department_id);
+CREATE INDEX idx_outpatient_patient_id ON public.outpatient(patient_id);
+CREATE INDEX idx_visit_patient_id ON public.visit(patient_id);
+CREATE INDEX idx_visit_date ON public.visit(visit_date);
+CREATE INDEX idx_queue_status ON public.queue(status);
+CREATE INDEX idx_queue_scheduled_date ON public.queue(scheduled_date);
+CREATE INDEX idx_queue_dept_scheduled ON public.queue(department_id, scheduled_date, status);
+CREATE INDEX idx_lab_request_status ON public.lab_request(status);
+CREATE INDEX idx_lab_result_staff_id ON public.lab_result(staff_id);
+CREATE INDEX idx_emergency_contact_patient_id ON public.emergency_contact(patient_id);
+CREATE INDEX idx_diagnosis_patient_id ON public.diagnosis(patient_id);
+CREATE INDEX idx_diagnosis_visit_id ON public.diagnosis(visit_id);
+CREATE INDEX idx_diagnosis_staff_id ON public.diagnosis(staff_id);
+CREATE INDEX idx_otp_verification_patient_id ON public.otp_verification(patient_id);
+CREATE INDEX idx_otp_verification_contact ON public.otp_verification(contact_info);
+CREATE INDEX idx_otp_verification_expires ON public.otp_verification(expires_at);
+CREATE INDEX idx_symptoms_category ON public.symptoms(category);
+CREATE INDEX idx_symptoms_active ON public.symptoms(is_active);
+CREATE INDEX idx_symptoms_age_group ON public.symptoms(age_group);
+CREATE INDEX idx_pre_registration_expires_status ON public.pre_registration(expires_at, status);
+CREATE INDEX idx_pre_registration_preferred_date ON public.pre_registration(preferred_date);
+CREATE INDEX idx_pre_registration_status ON public.pre_registration(status);
+CREATE INDEX idx_pre_registration_next_available ON public.pre_registration(next_available_date, next_available_time);
+CREATE INDEX idx_health_questionnaire_patient_id ON public.health_questionnaire(patient_id);
+CREATE INDEX idx_health_questionnaire_temp_id ON public.health_questionnaire(temp_assessment_id);
+CREATE INDEX idx_health_questionnaire_expires ON public.health_questionnaire(expires_at, status);
+CREATE INDEX idx_health_questionnaire_status ON public.health_questionnaire(status);
+CREATE INDEX idx_symptom_department_active ON public.symptom_department(is_active);
+CREATE INDEX idx_symptom_department_priority ON public.symptom_department(priority DESC);
+CREATE INDEX idx_navigation_steps_dept ON public.navigation_steps(department_id, step_order);
+CREATE INDEX idx_department_scheduled ON public.department(is_scheduled, service_type);
+CREATE INDEX idx_department_queue_color ON public.department(queue_color);
+
+-- ============================================================================
+-- GRANT PRIVILEGES
+-- ============================================================================
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE 'GRANT ALL PRIVILEGES ON public.' || quote_ident(r.tablename) || 
+                ' TO postgres, anon, authenticated, service_role';
+    END LOOP;
+
+    FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP
+        EXECUTE 'GRANT ALL PRIVILEGES ON SEQUENCE public.' || quote_ident(r.sequence_name) || 
+                ' TO postgres, anon, authenticated, service_role';
+    END LOOP;
+END$$;
+
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' DISABLE ROW LEVEL SECURITY';
+    END LOOP;
+END$$;
+
+-- ============================================================================
+-- FUNCTIONS AND TRIGGERS
+-- ============================================================================
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION hash_password_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.password IS NOT NULL AND NOT (NEW.password LIKE '$2%') THEN
+        NEW.password := crypt(NEW.password, gen_salt('bf', 12));
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS hash_admin_password_trigger ON public.admin;
+CREATE TRIGGER hash_admin_password_trigger
+    BEFORE INSERT OR UPDATE OF password ON public.admin
+    FOR EACH ROW
+    EXECUTE FUNCTION hash_password_trigger();
+
+DROP TRIGGER IF EXISTS hash_staff_password_trigger ON public.staff;
+CREATE TRIGGER hash_staff_password_trigger
+    BEFORE INSERT OR UPDATE OF password ON public.staff
+    FOR EACH ROW
+    EXECUTE FUNCTION hash_password_trigger();
+
+GRANT EXECUTE ON FUNCTION hash_password_trigger() TO postgres, anon, authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION cleanup_completed_pre_registration()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+        RAISE NOTICE 'pre_registration % marked as completed, will be cleaned up', NEW.temp_id;
+        NEW.updated_at := NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_cleanup_completed_pre_registration ON public.pre_registration;
+CREATE TRIGGER trigger_cleanup_completed_pre_registration
+    BEFORE UPDATE OF status ON public.pre_registration
+    FOR EACH ROW
+    EXECUTE FUNCTION cleanup_completed_pre_registration();
+
+CREATE OR REPLACE FUNCTION delete_old_completed_pre_registration()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM public.pre_registration
+    WHERE status = 'completed'
+      AND updated_at < NOW() - INTERVAL '10 seconds';
+    
+    RAISE NOTICE 'Cleaned up % old completed pre-registrations', 
+                 (SELECT COUNT(*) FROM public.pre_registration WHERE status = 'completed');
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT EXECUTE ON FUNCTION cleanup_completed_pre_registration() TO postgres, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION delete_old_completed_pre_registration() TO postgres, anon, authenticated, service_role;
+
+ALTER TABLE lab_request 
+ADD COLUMN IF NOT EXISTS reviewed_by INTEGER,
+ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP,
+ADD COLUMN IF NOT EXISTS decline_reason TEXT;
+
+ALTER TABLE public.queue 
+ADD COLUMN IF NOT EXISTS completed_by INTEGER REFERENCES public.staff(id);
+
+CREATE INDEX IF NOT EXISTS idx_queue_completed_by ON public.queue(completed_by);
+
+SELECT 'SUCCESS: Enhanced database schema created with scheduled_date support in queue table' AS status;
+
+-- Time Slots
+INSERT INTO time_slots (slot_name, display_label, start_time, end_time) VALUES
+('morning', 'Morning (8:00 AM - 12:00 PM)', '08:00', '12:00'),
+('afternoon', 'Afternoon (12:00 PM - 5:00 PM)', '12:00', '17:00'),
+('evening', 'Evening (5:00 PM - 8:00 PM)', '17:00', '20:00'),
+('anytime', 'Any available time', '08:00', '20:00');
+
+-- Relationship Types
+INSERT INTO relationship_types (relationship_name) VALUES
+('Parent'), ('Spouse'), ('Sibling'), ('Child'), ('Relative'), ('Friend'), ('Guardian');
+
+-- Severity Levels
+INSERT INTO severity_levels (level_name, description) VALUES
+('Mild', 'Manageable discomfort'),
+('Moderate', 'Affects daily activities'),
+('Severe', 'Significantly impacts life'),
+('Critical', 'Urgent attention needed');
+
+-- Duration Options
+INSERT INTO duration_options (duration_text) VALUES
+('Less than 1 day'), ('1-3 days'), ('1 week'), ('2-4 weeks'), ('1-3 months'), ('More than 3 months');
+
+-- ============================================================================
+-- DEPARTMENTS WITH CORRECT SCHEDULES AND COLORS
+-- ============================================================================
+
+-- 1. GENERAL DAILY OPD SERVICES (Mon-Fri, 8:00-17:00)
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('ENT and Ophthalmology', 'active', 'Cyan', FALSE, 'general', NULL),
+('Obstetrics and Gynecology', 'active', 'Pink', FALSE, 'general', NULL),
+('General Surgery', 'active', 'Green', FALSE, 'general', NULL),
+('Pediatrics', 'active', 'Yellow', FALSE, 'general', NULL),
+('Family Medicine Regular', 'active', 'Purple', FALSE, 'general', NULL),
+('Family Medicine Senior/PWD', 'active', 'Blue', FALSE, 'general', NULL),
+('Internal Medicine', 'active', 'Gray', FALSE, 'general', NULL),
+('TB DOTS', 'active', 'Orange', FALSE, 'general', NULL),
+('Dental', 'active', 'White', FALSE, 'general', NULL);
+
+-- 2. SUBSPECIALTY CLINICS (Scheduled by Specific Days)
+
+-- MONDAY SUBSPECIALTIES
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('Diabetes Clinic', 'active', 'Light Blue', TRUE, 'subspecialty', '{
+  "Monday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Hematology', 'active', 'Maroon', TRUE, 'subspecialty', '{
+  "Monday": [{"start": "08:00", "end": "17:00"}],
+  "Tuesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Infectious Disease', 'active', 'Brown', TRUE, 'subspecialty', '{
+  "Monday": [{"start": "08:00", "end": "17:00"}],
+  "Thursday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb);
+
+-- CARDIOLOGY (Tue, Wed, Thu, Fri)
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('Cardiology', 'active', 'Red', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}],
+  "Wednesday": [{"start": "08:00", "end": "17:00"}],
+  "Thursday": [{"start": "08:00", "end": "17:00"}],
+  "Friday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb);
+
+-- TUESDAY SUBSPECIALTIES
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('Rheumatology', 'active', 'Teal', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}],
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Orthopedics', 'active', 'Navy', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}],
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Endocrinology', 'active', 'Lime', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Nephrology Adult', 'active', 'Olive', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}],
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Medical Oncology', 'active', 'Violet', TRUE, 'subspecialty', '{
+  "Tuesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb);
+
+-- WEDNESDAY SUBSPECIALTIES
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('Gastroenterology Adult', 'active', 'Coral', TRUE, 'subspecialty', '{
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Pulmonology Pedia', 'active', 'Sky Blue', TRUE, 'subspecialty', '{
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Pulmonology Adult', 'active', 'Indigo', TRUE, 'subspecialty', '{
+  "Wednesday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb);
+
+-- THURSDAY SUBSPECIALTIES
+INSERT INTO department (name, status, queue_color, is_scheduled, service_type, available_days) VALUES
+('Neurology', 'active', 'Magenta', TRUE, 'subspecialty', '{
+  "Thursday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb),
+
+('Surgery Oncology', 'active', 'Crimson', TRUE, 'subspecialty', '{
+  "Thursday": [{"start": "08:00", "end": "17:00"}]
+}'::jsonb);
+
+-- ============================================================================
+-- SYMPTOMS (CORRECTED - Emergency conditions changed to OPD-appropriate)
+-- ============================================================================
+
+-- ENT and Ophthalmology (department_id = 1)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Ear Pain', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Hearing Loss', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Sinusitis', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Nasal Congestion', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Sore Throat', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Hoarseness', 'Ear, Nose & Throat', 1, 'all', 'normal', true, false),
+('Vision Problems', 'Eye Care', 1, 'all', 'normal', true, false),
+('Eye Redness', 'Eye Care', 1, 'all', 'normal', true, false),
+('Eye Pain', 'Eye Care', 1, 'all', 'normal', true, false),
+('Cataract', 'Eye Care', 1, 'all', 'normal', true, false),
+('Watery Eye', 'Eye Care', 1, 'all', 'normal', true, false);
+
+-- Obstetrics and Gynecology (department_id = 2)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Irregular Menstruation', 'Women''s Health', 2, 'adult', 'normal', true, false),
+('Dysmenorrhea', 'Women''s Health', 2, 'adult', 'normal', true, false),
+('Pelvic Pain', 'Women''s Health', 2, 'adult', 'normal', true, false),
+('Vaginal Discharge', 'Women''s Health', 2, 'adult', 'normal', true, false),
+('Missed Period', 'Women''s Health', 2, 'adult', 'normal', true, false),
+('Pregnancy Check-up', 'Routine Care', 2, 'adult', 'normal', true, true),
+('Prenatal Care', 'Routine Care', 2, 'adult', 'normal', true, true),
+('Postnatal Care', 'Routine Care', 2, 'adult', 'normal', true, true),
+('Family Planning', 'Routine Care', 2, 'adult', 'normal', true, true),
+('Fertility Concern', 'Women''s Health', 2, 'adult', 'normal', true, false);
+
+-- General Surgery (department_id = 3)
+-- FIXED: Removed duplicate "Appendicitis Symptoms" and "Appendicitis"
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Lump or Mass', 'Surgery Needed', 3, 'all', 'normal', true, false),
+('Wound Infection', 'Surgery Needed', 3, 'all', 'normal', true, false),
+('Abscess', 'Surgery Needed', 3, 'all', 'normal', true, false),
+('Suspected Appendicitis', 'Surgery Needed', 3, 'all', 'high', true, false),
+('Hernia', 'Surgery Needed', 3, 'all', 'normal', true, false),
+('Gallstones', 'Surgery Needed', 3, 'all', 'normal', true, false),
+('Post-Surgery Follow-up', 'Surgery Needed', 3, 'all', 'normal', true, true),
+('Wound Care', 'Surgery Needed', 3, 'all', 'normal', true, false);
+
+-- Pediatrics (department_id = 4)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Fever (Child)', 'General Symptoms', 4, 'child', 'normal', true, false),
+('Cough and Colds (Child)', 'Breathing Issues', 4, 'child', 'normal', true, false),
+('Ear Pain (Child)', 'Ear, Nose & Throat', 4, 'child', 'normal', true, false),
+('Vomiting (Child)', 'Stomach & Digestion', 4, 'child', 'normal', true, false),
+('Poor Appetite', 'General Symptoms', 4, 'child', 'normal', true, false),
+('Rashes (Child)', 'Skin Problems', 4, 'child', 'normal', true, false),
+('Developmental Delay', 'Child Development', 4, 'child', 'normal', true, false),
+('Vaccination', 'Routine Care', 4, 'child', 'normal', true, true),
+('Diarrhea (Infant/Child)', 'Stomach & Digestion', 4, 'child', 'normal', true, false),
+('Well-Baby Check-up', 'Routine Care', 4, 'child', 'normal', true, true);
+
+-- Family Medicine Regular (department_id = 5)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Fever', 'General Symptoms', 5, 'all', 'normal', true, false),
+('Cough', 'Breathing Issues', 5, 'all', 'normal', true, false),
+('Colds', 'Breathing Issues', 5, 'all', 'normal', true, false),
+('Headache', 'Head & Brain', 5, 'all', 'normal', true, false),
+('General Body Pain', 'General Symptoms', 5, 'all', 'normal', true, false),
+('Fatigue', 'General Symptoms', 5, 'all', 'normal', true, false),
+('Annual Check-up', 'Routine Care', 5, 'all', 'normal', true, true),
+('Health Screening', 'Routine Care', 5, 'all', 'normal', true, true),
+('Physical Exam', 'Routine Care', 5, 'all', 'normal', true, true);
+
+-- Family Medicine Senior/PWD (department_id = 6)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Senior Check-up', 'Routine Care', 6, 'senior', 'normal', true, true),
+('PWD Assessment', 'Routine Care', 6, 'all', 'normal', true, true),
+('Medication Review', 'Routine Care', 6, 'senior', 'normal', true, true),
+('Blood Pressure Check', 'Routine Care', 6, 'senior', 'normal', true, true),
+('Diabetes Monitoring', 'Blood Sugar & Hormones', 6, 'senior', 'normal', true, false),
+('Joint Pain (Senior)', 'Pain Management', 6, 'senior', 'normal', true, false);
+
+-- Internal Medicine (department_id = 7)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Chest Discomfort', 'Heart & Chest', 7, 'all', 'high', true, false),
+('Shortness of Breath', 'Breathing Issues', 7, 'all', 'high', true, false),
+('High Blood Pressure', 'Heart & Chest', 7, 'all', 'normal', true, false),
+('Diabetes', 'Blood Sugar & Hormones', 7, 'all', 'normal', true, false),
+('Palpitations', 'Heart & Chest', 7, 'all', 'normal', true, false),
+('Stomach Pain', 'Stomach & Digestion', 7, 'all', 'normal', true, false),
+('Vomiting', 'Stomach & Digestion', 7, 'all', 'normal', true, false),
+('Diarrhea', 'Stomach & Digestion', 7, 'all', 'normal', true, false),
+('Loss of Appetite', 'General Symptoms', 7, 'all', 'normal', true, false),
+('Chills', 'General Symptoms', 7, 'all', 'normal', true, false),
+('General Body Weakness', 'General Symptoms', 7, 'all', 'normal', true, false),
+('Dizziness', 'Head & Brain', 7, 'all', 'normal', true, false);
+
+-- TB DOTS (department_id = 8)
+-- FIXED: "Coughing Blood" changed to "History of Coughing Blood" for OPD
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Persistent Cough', 'Breathing Issues', 8, 'all', 'high', true, false),
+('History of Coughing Blood', 'Breathing Issues', 8, 'all', 'high', true, false),
+('Night Sweats', 'General Symptoms', 8, 'all', 'normal', true, false),
+('Unexplained Weight Loss', 'General Symptoms', 8, 'all', 'high', true, false),
+('TB Follow-up', 'Routine Care', 8, 'all', 'normal', true, true),
+('TB Medication Refill', 'Routine Care', 8, 'all', 'normal', true, true),
+('TB Screening', 'Routine Care', 8, 'all', 'normal', true, true);
+
+-- Dental (department_id = 9)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Toothache', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Gum Bleeding', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Mouth Sore', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Bad Breath', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Tooth Decay', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Oral Infection', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Tooth Extraction', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Denture Fitting', 'Dental & Oral Care', 9, 'all', 'normal', true, false),
+('Dental Cleaning', 'Dental & Oral Care', 9, 'all', 'normal', true, true),
+('Jaw Pain', 'Dental & Oral Care', 9, 'all', 'normal', true, false);
+
+-- ============================================================================
+-- SUBSPECIALTY SYMPTOMS (CORRECTED)
+-- ============================================================================
+
+-- Diabetes Clinic (department_id = 10)
+-- FIXED: "Low Blood Sugar" changed to "Hypoglycemia History"
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Diabetes Management', 'Blood Sugar & Hormones', 10, 'all', 'normal', true, false),
+('High Blood Sugar', 'Blood Sugar & Hormones', 10, 'all', 'high', true, false),
+('Hypoglycemia History', 'Blood Sugar & Hormones', 10, 'all', 'normal', true, false),
+('Diabetic Complications', 'Blood Sugar & Hormones', 10, 'all', 'high', true, false),
+('Insulin Adjustment', 'Blood Sugar & Hormones', 10, 'all', 'normal', true, false),
+('Diabetes Follow-up', 'Blood Sugar & Hormones', 10, 'all', 'normal', true, true);
+
+-- Hematology (department_id = 11)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Anemia', 'Blood Disorders', 11, 'all', 'normal', true, false),
+('Easy Bruising', 'Blood Disorders', 11, 'all', 'normal', true, false),
+('Bleeding Disorder', 'Blood Disorders', 11, 'all', 'high', true, false),
+('Blood Disorder', 'Blood Disorders', 11, 'all', 'normal', true, false),
+('Abnormal Blood Count', 'Blood Disorders', 11, 'all', 'normal', true, false),
+('Hematology Follow-up', 'Blood Disorders', 11, 'all', 'normal', true, true);
+
+-- Infectious Disease (department_id = 12)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Recurring Infections', 'Infectious Disease', 12, 'all', 'high', true, false),
+('Tropical Disease', 'Infectious Disease', 12, 'all', 'high', true, false),
+('HIV/AIDS Care', 'Infectious Disease', 12, 'all', 'high', true, false),
+('Hepatitis', 'Infectious Disease', 12, 'all', 'high', true, false),
+('Antibiotic Resistance Consultation', 'Infectious Disease', 12, 'all', 'high', true, false),
+('Infectious Disease Follow-up', 'Infectious Disease', 12, 'all', 'normal', true, true);
+
+-- Cardiology (department_id = 13)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Heart Disease', 'Heart & Chest', 13, 'all', 'high', true, false),
+('Irregular Heartbeat', 'Heart & Chest', 13, 'all', 'high', true, false),
+('Heart Attack History', 'Heart & Chest', 13, 'all', 'high', true, false),
+('Heart Murmur', 'Heart & Chest', 13, 'all', 'normal', true, false),
+('Cardiac Follow-up', 'Heart & Chest', 13, 'all', 'normal', true, true),
+('Hypertension Management', 'Heart & Chest', 13, 'all', 'normal', true, false);
+
+-- Rheumatology (department_id = 14)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Arthritis', 'Joint & Bone', 14, 'all', 'normal', true, false),
+('Joint Swelling', 'Joint & Bone', 14, 'all', 'normal', true, false),
+('Lupus', 'Autoimmune', 14, 'all', 'normal', true, false),
+('Rheumatoid Arthritis', 'Joint & Bone', 14, 'all', 'normal', true, false),
+('Autoimmune Disease', 'Autoimmune', 14, 'all', 'normal', true, false),
+('Rheumatology Follow-up', 'Autoimmune', 14, 'all', 'normal', true, true);
+
+-- Orthopedics (department_id = 15)
+-- FIXED: "Bone Fracture" changed to "Fracture Follow-up"
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Fracture Follow-up', 'Joint & Bone', 15, 'all', 'normal', true, false),
+('Joint Pain', 'Joint & Bone', 15, 'all', 'normal', true, false),
+('Back Pain', 'Joint & Bone', 15, 'all', 'normal', true, false),
+('Sports Injury', 'Joint & Bone', 15, 'all', 'normal', true, false),
+('Bone Disease', 'Joint & Bone', 15, 'all', 'normal', true, false),
+('Orthopedic Consultation', 'Joint & Bone', 15, 'all', 'normal', true, false);
+
+-- Endocrinology (department_id = 16)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Thyroid Problems', 'Blood Sugar & Hormones', 16, 'all', 'normal', true, false),
+('Hormone Imbalance', 'Blood Sugar & Hormones', 16, 'all', 'normal', true, false),
+('Growth Problems', 'Blood Sugar & Hormones', 16, 'child', 'normal', true, false),
+('Adrenal Problems', 'Blood Sugar & Hormones', 16, 'all', 'normal', true, false),
+('Endocrine Follow-up', 'Blood Sugar & Hormones', 16, 'all', 'normal', true, true);
+
+-- Nephrology Adult (department_id = 17)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Kidney Disease', 'Kidney Problems', 17, 'all', 'high', true, false),
+('Kidney Stones History', 'Kidney Problems', 17, 'all', 'normal', true, false),
+('Abnormal Creatinine Levels', 'Kidney Problems', 17, 'all', 'normal', true, false),
+('Swelling (Edema)', 'Kidney Problems', 17, 'all', 'normal', true, false),
+('Decreased Urination', 'Kidney Problems', 17, 'all', 'normal', true, false),
+('Nephrology Follow-up', 'Kidney Problems', 17, 'all', 'normal', true, true);
+
+-- Medical Oncology (department_id = 18)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Cancer Treatment', 'Cancer Care', 18, 'all', 'high', true, false),
+('Chemotherapy Follow-up', 'Cancer Care', 18, 'all', 'high', true, true),
+('Cancer Screening', 'Cancer Care', 18, 'all', 'normal', true, true),
+('Tumor Evaluation', 'Cancer Care', 18, 'all', 'high', true, false),
+('Cancer Pain Management', 'Cancer Care', 18, 'all', 'high', true, false);
+
+-- Gastroenterology Adult (department_id = 19)
+-- FIXED: Removed "Vomiting Blood" (emergency), changed "Black Stool" to chronic version
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Chronic Abdominal Pain', 'Stomach & Digestion', 19, 'all', 'normal', true, false),
+('Bloating', 'Stomach & Digestion', 19, 'all', 'normal', true, false),
+('Chronic/Recurrent Black Stool', 'Stomach & Digestion', 19, 'all', 'high', true, false),
+('Acid Reflux', 'Stomach & Digestion', 19, 'all', 'normal', true, false),
+('Suspected Ulcer', 'Stomach & Digestion', 19, 'all', 'normal', true, false),
+('Suspected Colon Disease', 'Stomach & Digestion', 19, 'all', 'normal', true, false),
+('GI Follow-up', 'Stomach & Digestion', 19, 'all', 'normal', true, true);
+
+-- Pulmonology Pedia (department_id = 20)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Asthma (Child)', 'Breathing Issues', 20, 'child', 'normal', true, false),
+('Chronic Cough (Child)', 'Breathing Issues', 20, 'child', 'normal', true, false),
+('Breathing Problems (Child)', 'Breathing Issues', 20, 'child', 'high', true, false),
+('Lung Disease (Child)', 'Breathing Issues', 20, 'child', 'high', true, false),
+('Pediatric Pulmonology Follow-up', 'Breathing Issues', 20, 'child', 'normal', true, true);
+
+-- Pulmonology Adult (department_id = 21)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Asthma', 'Breathing Issues', 21, 'all', 'normal', true, false),
+('COPD', 'Breathing Issues', 21, 'all', 'high', true, false),
+('Lung Disease', 'Breathing Issues', 21, 'all', 'high', true, false),
+('Chronic Cough', 'Breathing Issues', 21, 'all', 'normal', true, false),
+('Sleep Apnea', 'Breathing Issues', 21, 'all', 'normal', true, false),
+('Pulmonology Follow-up', 'Breathing Issues', 21, 'all', 'normal', true, true);
+
+-- Neurology (department_id = 22)
+-- FIXED: "Seizures" and "Stroke" changed to management/follow-up versions
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Seizure Disorder/Epilepsy', 'Head & Brain', 22, 'all', 'high', true, false),
+('Post-Stroke Care', 'Head & Brain', 22, 'all', 'high', true, false),
+('Migraine', 'Head & Brain', 22, 'all', 'normal', true, false),
+('Memory Problems', 'Head & Brain', 22, 'all', 'normal', true, false),
+('Numbness/Tingling', 'Head & Brain', 22, 'all', 'normal', true, false),
+('Tremors', 'Head & Brain', 22, 'all', 'normal', true, false),
+('Neurology Follow-up', 'Head & Brain', 22, 'all', 'normal', true, true);
+
+-- Surgery Oncology (department_id = 23)
+INSERT INTO symptoms (name, category, department_id, age_group, priority, is_active, is_routine_care) VALUES
+('Cancer Surgery Consultation', 'Cancer Care', 23, 'all', 'high', true, false),
+('Tumor Removal Consultation', 'Cancer Care', 23, 'all', 'high', true, false),
+('Post-Cancer Surgery Follow-up', 'Cancer Care', 23, 'all', 'normal', true, true),
+('Oncology Surgery Consultation', 'Cancer Care', 23, 'all', 'high', true, false);
+
+-- ============================================================================
+-- SYMPTOM TO DEPARTMENT MAPPINGS (CORRECTED)
+-- ============================================================================
+
+-- ENT and Ophthalmology (department_id = 1)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Ear Pain', 1, 8, 18, 999),
+('Hearing Loss', 1, 6, 18, 999),
+('Sinusitis', 1, 5, 5, 999),
+('Nasal Congestion', 1, 4, 0, 999),
+('Sore Throat', 1, 4, 0, 999),
+('Hoarseness', 1, 5, 0, 999),
+('Vision Problems', 1, 7, 18, 999),
+('Eye Redness', 1, 5, 18, 999),
+('Eye Pain', 1, 7, 12, 999),
+('Cataract', 1, 7, 50, 999),
+('Watery Eye', 1, 4, 0, 999);
+
+-- Obstetrics and Gynecology (department_id = 2)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Irregular Menstruation', 2, 8, 12, 55),
+('Dysmenorrhea', 2, 7, 12, 55),
+('Pelvic Pain', 2, 8, 18, 999),
+('Vaginal Discharge', 2, 7, 12, 999),
+('Missed Period', 2, 8, 12, 55),
+('Pregnancy Check-up', 2, 9, 18, 45),
+('Prenatal Care', 2, 9, 18, 45),
+('Postnatal Care', 2, 9, 18, 45),
+('Family Planning', 2, 7, 18, 55),
+('Fertility Concern', 2, 8, 18, 45);
+
+-- General Surgery (department_id = 3) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Lump or Mass', 3, 7, 0, 999),
+('Wound Infection', 3, 8, 0, 999),
+('Abscess', 3, 8, 0, 999),
+('Suspected Appendicitis', 3, 10, 5, 999),
+('Hernia', 3, 7, 0, 999),
+('Gallstones', 3, 7, 20, 999),
+('Post-Surgery Follow-up', 3, 5, 0, 999),
+('Wound Care', 3, 6, 0, 999);
+
+-- Pediatrics (department_id = 4)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Fever (Child)', 4, 6, 0, 17),
+('Cough and Colds (Child)', 4, 6, 0, 17),
+('Ear Pain (Child)', 4, 6, 0, 17),
+('Vomiting (Child)', 4, 6, 0, 17),
+('Poor Appetite', 4, 5, 0, 17),
+('Rashes (Child)', 4, 5, 0, 17),
+('Developmental Delay', 4, 8, 0, 17),
+('Vaccination', 4, 4, 0, 17),
+('Diarrhea (Infant/Child)', 4, 6, 0, 17),
+('Well-Baby Check-up', 4, 4, 0, 2);
+
+-- Family Medicine Regular (department_id = 5)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Fever', 5, 5, 18, 64),
+('Cough', 5, 5, 18, 64),
+('Colds', 5, 5, 18, 64),
+('Headache', 5, 5, 18, 64),
+('General Body Pain', 5, 4, 18, 64),
+('Fatigue', 5, 4, 18, 64),
+('Annual Check-up', 5, 3, 18, 64),
+('Health Screening', 5, 3, 18, 64),
+('Physical Exam', 5, 3, 18, 64);
+
+-- Family Medicine Senior/PWD (department_id = 6)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Senior Check-up', 6, 4, 60, 999),
+('PWD Assessment', 6, 4, 0, 999),
+('Medication Review', 6, 4, 60, 999),
+('Blood Pressure Check', 6, 4, 60, 999),
+('Diabetes Monitoring', 6, 5, 60, 999),
+('Joint Pain (Senior)', 6, 5, 60, 999);
+
+-- Internal Medicine (department_id = 7)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Chest Discomfort', 7, 9, 18, 999),
+('Shortness of Breath', 7, 9, 18, 999),
+('High Blood Pressure', 7, 7, 18, 999),
+('Diabetes', 7, 7, 12, 999),
+('Palpitations', 7, 6, 18, 999),
+('Stomach Pain', 7, 5, 18, 999),
+('Vomiting', 7, 5, 18, 999),
+('Diarrhea', 7, 5, 18, 999),
+('Loss of Appetite', 7, 4, 18, 999),
+('Chills', 7, 5, 18, 999),
+('General Body Weakness', 7, 4, 18, 999),
+('Dizziness', 7, 5, 18, 999);
+
+-- TB DOTS (department_id = 8) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Persistent Cough', 8, 8, 0, 999),
+('History of Coughing Blood', 8, 9, 0, 999),
+('Night Sweats', 8, 6, 0, 999),
+('Unexplained Weight Loss', 8, 8, 0, 999),
+('TB Follow-up', 8, 5, 0, 999),
+('TB Medication Refill', 8, 5, 0, 999),
+('TB Screening', 8, 5, 0, 999);
+
+-- Dental (department_id = 9)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Toothache', 9, 6, 0, 999),
+('Gum Bleeding', 9, 5, 0, 999),
+('Mouth Sore', 9, 5, 0, 999),
+('Bad Breath', 9, 3, 0, 999),
+('Tooth Decay', 9, 6, 0, 999),
+('Oral Infection', 9, 7, 0, 999),
+('Tooth Extraction', 9, 6, 0, 999),
+('Denture Fitting', 9, 4, 50, 999),
+('Dental Cleaning', 9, 3, 0, 999),
+('Jaw Pain', 9, 7, 0, 999);
+
+-- ============================================================================
+-- SUBSPECIALTY MAPPINGS (CORRECTED)
+-- ============================================================================
+
+-- Diabetes Clinic (department_id = 10) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Diabetes Management', 10, 9, 18, 999),
+('High Blood Sugar', 10, 9, 18, 999),
+('Hypoglycemia History', 10, 7, 18, 999),
+('Diabetic Complications', 10, 9, 18, 999),
+('Insulin Adjustment', 10, 8, 18, 999),
+('Diabetes Follow-up', 10, 6, 18, 999);
+
+-- Hematology (department_id = 11)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Anemia', 11, 7, 0, 999),
+('Easy Bruising', 11, 7, 0, 999),
+('Bleeding Disorder', 11, 8, 0, 999),
+('Blood Disorder', 11, 8, 0, 999),
+('Abnormal Blood Count', 11, 7, 0, 999),
+('Hematology Follow-up', 11, 5, 0, 999);
+
+-- Infectious Disease (department_id = 12)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Recurring Infections', 12, 8, 0, 999),
+('Tropical Disease', 12, 8, 0, 999),
+('HIV/AIDS Care', 12, 9, 18, 999),
+('Hepatitis', 12, 8, 0, 999),
+('Antibiotic Resistance Consultation', 12, 7, 0, 999),
+('Infectious Disease Follow-up', 12, 5, 0, 999);
+
+-- Cardiology (department_id = 13)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Heart Disease', 13, 10, 18, 999),
+('Irregular Heartbeat', 13, 10, 18, 999),
+('Heart Attack History', 13, 10, 18, 999),
+('Heart Murmur', 13, 8, 18, 999),
+('Cardiac Follow-up', 13, 6, 18, 999),
+('Hypertension Management', 13, 7, 40, 999),
+('Chest Discomfort', 13, 10, 40, 999),
+('Palpitations', 13, 8, 40, 999);
+
+-- Rheumatology (department_id = 14)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Arthritis', 14, 7, 18, 999),
+('Joint Swelling', 14, 7, 18, 999),
+('Lupus', 14, 8, 18, 999),
+('Rheumatoid Arthritis', 14, 8, 18, 999),
+('Autoimmune Disease', 14, 8, 18, 999),
+('Rheumatology Follow-up', 14, 5, 18, 999);
+
+-- Orthopedics (department_id = 15) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Fracture Follow-up', 15, 8, 0, 999),
+('Joint Pain', 15, 6, 18, 999),
+('Back Pain', 15, 6, 18, 999),
+('Sports Injury', 15, 7, 12, 999),
+('Bone Disease', 15, 7, 0, 999),
+('Orthopedic Consultation', 15, 6, 0, 999);
+
+-- Endocrinology (department_id = 16)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Thyroid Problems', 16, 7, 18, 999),
+('Hormone Imbalance', 16, 7, 18, 999),
+('Growth Problems', 16, 8, 0, 17),
+('Adrenal Problems', 16, 7, 18, 999),
+('Endocrine Follow-up', 16, 5, 0, 999);
+
+-- Nephrology Adult (department_id = 17) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Kidney Disease', 17, 9, 18, 999),
+('Kidney Stones History', 17, 7, 18, 999),
+('Abnormal Creatinine Levels', 17, 7, 18, 999),
+('Swelling (Edema)', 17, 6, 18, 999),
+('Decreased Urination', 17, 7, 18, 999),
+('Nephrology Follow-up', 17, 5, 18, 999);
+
+-- Medical Oncology (department_id = 18)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Cancer Treatment', 18, 10, 18, 999),
+('Chemotherapy Follow-up', 18, 10, 18, 999),
+('Cancer Screening', 18, 7, 40, 999),
+('Tumor Evaluation', 18, 10, 18, 999),
+('Cancer Pain Management', 18, 9, 18, 999);
+
+-- Gastroenterology Adult (department_id = 19) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Chronic Abdominal Pain', 19, 7, 18, 999),
+('Bloating', 19, 5, 18, 999),
+('Chronic/Recurrent Black Stool', 19, 8, 18, 999),
+('Acid Reflux', 19, 6, 18, 999),
+('Suspected Ulcer', 19, 7, 18, 999),
+('Suspected Colon Disease', 19, 7, 40, 999),
+('GI Follow-up', 19, 5, 18, 999);
+
+-- Pulmonology Pedia (department_id = 20)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Asthma (Child)', 20, 8, 0, 17),
+('Chronic Cough (Child)', 20, 7, 0, 17),
+('Breathing Problems (Child)', 20, 9, 0, 17),
+('Lung Disease (Child)', 20, 9, 0, 17),
+('Pediatric Pulmonology Follow-up', 20, 5, 0, 17);
+
+-- Pulmonology Adult (department_id = 21)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Asthma', 21, 7, 18, 999),
+('COPD', 21, 9, 40, 999),
+('Lung Disease', 21, 9, 18, 999),
+('Chronic Cough', 21, 6, 18, 999),
+('Sleep Apnea', 21, 6, 18, 999),
+('Pulmonology Follow-up', 21, 5, 18, 999);
+
+-- Neurology (department_id = 22) - FIXED
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Seizure Disorder/Epilepsy', 22, 9, 0, 999),
+('Post-Stroke Care', 22, 9, 18, 999),
+('Migraine', 22, 6, 18, 999),
+('Memory Problems', 22, 7, 40, 999),
+('Numbness/Tingling', 22, 7, 18, 999),
+('Tremors', 22, 7, 18, 999),
+('Neurology Follow-up', 22, 5, 0, 999);
+
+-- Surgery Oncology (department_id = 23)
+INSERT INTO symptom_department (symptom_name, department_id, priority, age_min, age_max) VALUES
+('Cancer Surgery Consultation', 23, 10, 18, 999),
+('Tumor Removal Consultation', 23, 10, 18, 999),
+('Post-Cancer Surgery Follow-up', 23, 7, 18, 999),
+('Oncology Surgery Consultation', 23, 9, 18, 999);
+
+-- ============================================================================
+-- NAVIGATION STEPS FOR EACH DEPARTMENT
+-- ============================================================================
+
+-- ENT and Ophthalmology (department_id = 1)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(1, 1, 'Main Lobby', 'Enter through the main hospital entrance and proceed to reception.', '1F', 'Lobby'),
+(1, 2, 'ENT Clinic', 'Proceed to the right wing and follow signs to ENT Clinic.', '1F', 'ENT Clinic (Room 107)');
+
+-- Obstetrics and Gynecology (department_id = 2)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(2, 1, 'Main Lobby', 'From the main entrance, proceed to the left corridor.', '1F', 'Lobby'),
+(2, 2, 'OB-Gyne Clinic', 'Located near the ultrasound section.', '1F', 'OB-Gyne Clinic (Room 106)');
+
+-- General Surgery (department_id = 3)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(3, 1, 'Main Lobby', 'Enter the hospital and follow the main hallway straight ahead.', '1F', 'Lobby'),
+(3, 2, 'Surgery Clinic', 'Located beside the minor operation room.', '1F', 'Surgery Clinic (Room 105)');
+
+-- Pediatrics (department_id = 4)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(4, 1, 'Main Lobby', 'Enter through the main entrance and proceed to the right hallway.', '1F', 'Lobby'),
+(4, 2, 'Pediatric Clinic', 'Located next to the vaccination area.', '1F', 'Pediatric Clinic (Room 104)');
+
+-- Family Medicine Regular (department_id = 5)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(5, 1, 'Main Lobby', 'From reception, proceed straight to the OPD area.', '1F', 'Lobby'),
+(5, 2, 'Medicine Clinic', 'Located inside the OPD section.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Family Medicine Senior/PWD (department_id = 6)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(6, 1, 'Main Lobby', 'From entrance, follow signs to Senior/PWD clinic.', '1F', 'Lobby'),
+(6, 2, 'OPD Clinic (Seniors/PWD)', 'Located outside the main OPD area for easier access.', '1F', 'OPD Clinic (Seniors/PWD)');
+
+-- Internal Medicine (department_id = 7)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(7, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(7, 2, 'Medicine Clinic', 'Shared with Family Medicine Regular.', '1F', 'Medicine Clinic (Room 103)');
+
+-- TB DOTS (department_id = 8)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(8, 1, 'Main Lobby', 'From entrance, follow TB DOTS signage.', '1F', 'Lobby'),
+(8, 2, 'TB DOTS Room', 'Dedicated room for TB treatment and monitoring.', '1F', 'TB DOTS Clinic');
+
+-- Dental (department_id = 9)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(9, 1, 'Main Lobby', 'From the main reception, follow signs to Dental Services.', '1F', 'Lobby'),
+(9, 2, 'Dental Clinic', 'Located beside Oral Surgery area.', '1F', 'Dental Clinic (Room 109)');
+
+-- Diabetes Clinic (department_id = 10)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(10, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(10, 2, 'Medicine Clinic', 'Diabetes clinic operates within Medicine Clinic on Mondays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Hematology (department_id = 11)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(11, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(11, 2, 'Medicine Clinic', 'Hematology clinic operates within Medicine Clinic on Mondays and Tuesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Infectious Disease (department_id = 12)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(12, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(12, 2, 'Medicine Clinic', 'Infectious Disease clinic operates within Medicine Clinic on Mondays and Thursdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Cardiology (department_id = 13)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(13, 1, 'Main Lobby', 'From entrance, follow signs to Sub Specialty Clinic.', '1F', 'Lobby'),
+(13, 2, 'Sub Specialty Clinic', 'Cardiology operates in the dedicated subspecialty area.', '1F', 'Sub Specialty Clinic (Room 102)');
+
+-- Rheumatology (department_id = 14)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(14, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(14, 2, 'Medicine Clinic', 'Rheumatology clinic operates within Medicine Clinic on Tuesdays and Wednesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Orthopedics (department_id = 15)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(15, 1, 'Main Lobby', 'Enter the hospital and follow the main hallway straight ahead.', '1F', 'Lobby'),
+(15, 2, 'Surgery Clinic', 'Orthopedics subspecialty operates within Surgery Clinic on Tuesdays and Wednesdays.', '1F', 'Surgery Clinic (Room 105)');
+
+-- Endocrinology (department_id = 16)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(16, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(16, 2, 'Medicine Clinic', 'Endocrinology clinic operates within Medicine Clinic on Tuesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Nephrology Adult (department_id = 17)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(17, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(17, 2, 'Medicine Clinic', 'Nephrology clinic operates within Medicine Clinic on Tuesdays and Wednesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Medical Oncology (department_id = 18)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(18, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(18, 2, 'Medicine Clinic', 'Medical Oncology clinic operates within Medicine Clinic on Tuesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Gastroenterology Adult (department_id = 19)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(19, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(19, 2, 'Medicine Clinic', 'Gastroenterology clinic operates within Medicine Clinic on Wednesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Pulmonology Pedia (department_id = 20)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(20, 1, 'Main Lobby', 'Enter through the main entrance and proceed to the right hallway.', '1F', 'Lobby'),
+(20, 2, 'Pediatric Clinic', 'Pulmonology Pedia operates within Pediatric Clinic on Wednesdays.', '1F', 'Pediatric Clinic (Room 104)');
+
+-- Pulmonology Adult (department_id = 21)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(21, 1, 'Main Lobby', 'Enter and proceed to the OPD section.', '1F', 'Lobby'),
+(21, 2, 'Medicine Clinic', 'Pulmonology Adult operates within Medicine Clinic on Wednesdays.', '1F', 'Medicine Clinic (Room 103)');
+
+-- Neurology (department_id = 22)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(22, 1, 'Main Lobby', 'From entrance, follow signs to Sub Specialty Clinic.', '1F', 'Lobby'),
+(22, 2, 'Sub Specialty Clinic', 'Neurology operates in the dedicated subspecialty area on Thursdays.', '1F', 'Sub Specialty Clinic (Room 102)');
+
+-- Surgery Oncology (department_id = 23)
+INSERT INTO navigation_steps (department_id, step_order, location_name, description, floor_number, room_numbers) VALUES
+(23, 1, 'Main Lobby', 'Enter the hospital and follow the main hallway straight ahead.', '1F', 'Lobby'),
+(23, 2, 'Surgery Clinic', 'Surgery Oncology operates within Surgery Clinic on Thursdays.', '1F', 'Surgery Clinic (Room 105)');
+
+-- ============================================================================
+-- ADMIN AND STAFF
+-- ============================================================================
+
+INSERT INTO admin (healthadmin_id, password, name, position, contact_no) VALUES
+('ADMIN001', 'admin123', 'Dr. Maria Santos', 'Chief Administrator', '09171234567');
+
+-- General Daily OPD Staff
+INSERT INTO staff (staff_id, password, name, role, specialization, department_id, license_no, contact_no) VALUES
+('DOC001', 'doctor123', 'Dr. Carlos Mendoza', 'Doctor', 'ENT and Ophthalmology', 1, 'MD-1001', '09170000001'),
+('DOC002', 'doctor123', 'Dr. Angela Reyes', 'Doctor', 'Obstetrics and Gynecology', 2, 'MD-1002', '09170000002'),
+('DOC003', 'doctor123', 'Dr. Joseph Tan', 'Doctor', 'General Surgery', 3, 'MD-1003', '09170000003'),
+('DOC004', 'doctor123', 'Dr. Maria Dela Cruz', 'Doctor', 'Pediatrics', 4, 'MD-1004', '09170000004'),
+('DOC005', 'doctor123', 'Dr. Roberto Santos', 'Doctor', 'Family Medicine Regular', 5, 'MD-1005', '09170000005'),
+('DOC006', 'doctor123', 'Dr. Elena Villanueva', 'Doctor', 'Family Medicine Senior/PWD', 6, 'MD-1006', '09170000006'),
+('DOC007', 'doctor123', 'Dr. Miguel Ramos', 'Doctor', 'Internal Medicine', 7, 'MD-1007', '09170000007'),
+('DOC008', 'doctor123', 'Dr. Patricia Lopez', 'Doctor', 'TB DOTS', 8, 'MD-1008', '09170000008'),
+('DOC009', 'doctor123', 'Dr. Bianca Flores', 'Doctor', 'Dental', 9, 'MD-1009', '09170000009');
+  
+-- Subspecialty Staff
+INSERT INTO staff (staff_id, password, name, role, specialization, department_id, license_no, contact_no) VALUES
+('DOC010', 'doctor123', 'Dr. Sofia Cruz', 'Doctor', 'Diabetes Clinic', 10, 'MD-1010', '09170000010'),
+('DOC011', 'doctor123', 'Dr. Hannah Navarro', 'Doctor', 'Hematology', 11, 'MD-1011', '09170000011'),
+('DOC012', 'doctor123', 'Dr. Alvin Garcia', 'Doctor', 'Infectious Disease', 12, 'MD-1012', '09170000012'),
+('DOC013', 'doctor123', 'Dr. John Paul Castillo', 'Doctor', 'Cardiology', 13, 'MD-1013', '09170000013'),
+('DOC014', 'doctor123', 'Dr. Liza Gomez', 'Doctor', 'Rheumatology', 14, 'MD-1014', '09170000014'),
+('DOC015', 'doctor123', 'Dr. Ryan Mendoza', 'Doctor', 'Orthopedics', 15, 'MD-1015', '09170000015'),
+('DOC016', 'doctor123', 'Dr. Karen Bautista', 'Doctor', 'Endocrinology', 16, 'MD-1016', '09170000016'),
+('DOC017', 'doctor123', 'Dr. Ernesto Cruz', 'Doctor', 'Nephrology Adult', 17, 'MD-1017', '09170000017'),
+('DOC018', 'doctor123', 'Dr. Lisa Morales', 'Doctor', 'Medical Oncology', 18, 'MD-1018', '09170000018'),
+('DOC019', 'doctor123', 'Dr. David Aquino', 'Doctor', 'Gastroenterology Adult', 19, 'MD-1019', '09170000019'),
+('DOC020', 'doctor123', 'Dr. Grace Pascual', 'Doctor', 'Pulmonology Pedia', 20, 'MD-1020', '09170000020'),
+('DOC021', 'doctor123', 'Dr. Mark Fernandez', 'Doctor', 'Pulmonology Adult', 21, 'MD-1021', '09170000021'),
+('DOC022', 'doctor123', 'Dr. Anna Herrera', 'Doctor', 'Neurology', 22, 'MD-1022', '09170000022'),
+('DOC023', 'doctor123', 'Dr. Benjamin Torres', 'Doctor', 'Surgery Oncology', 23, 'MD-1023', '09170000023');
+
+-- ============================================================================
+-- FLOOR PLAN IMAGES - UPDATED WITH NEW NAMING CONVENTION
+-- ============================================================================
+
+-- Update floor plan images with the new naming convention
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/1_ENT_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 1;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/2_OB-Gyne_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 2;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/3_Surgery_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 3;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/4_Pediatric_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 4;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 5;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/6_OPD_Clinic_(Seniors-PWD).png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 6;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 7;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/7_TB_DOTS_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 8;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/8_Dental_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 9;
+-- Subspecialty departments floor plan images
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 10;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 11;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 12;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/9_Sub_Specialty_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 13;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 14;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/3_Surgery_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 15;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 16;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 17;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 18;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 19;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/4_Pediatric_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 20;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/5_Medicine_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 21;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/9_Sub_Specialty_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 22;
+UPDATE public.department SET floor_plan_image = 'https://ohsrnuydyqskuwzairqw.supabase.co/storage/v1/object/public/floor_plans/3_Surgery_Clinic.png', floor_plan_image_type = 'png', updated_at = NOW() WHERE department_id = 23;
+
+SELECT 'SUCCESS: Sta. Ana Hospital database populated with 23 departments and updated floor plan images' AS status;
