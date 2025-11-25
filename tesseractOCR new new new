@@ -1,0 +1,461 @@
+// tesseractOCR.js
+import Tesseract from 'tesseract.js';
+
+/**
+ * Main OCR processing function
+ * @param {string} imageData - Base64 image data from canvas
+ * @returns {Promise<Object>} - OCR result with extracted name
+ */
+export const processIDWithOCR = async (imageData) => {
+  try {
+    console.log('🚀 Starting OCR processing...');
+    
+    const { data: { text } } = await Tesseract.recognize(imageData, 'eng', {
+      logger: m => console.log('OCR Progress:', m),
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ ,.-',
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+    });
+    
+    console.log('📄 OCR Raw Text Result:');
+    console.log('──────────────────────────────────────────────────');
+    console.log(text);
+    console.log('──────────────────────────────────────────────────');
+    
+    const extractedName = extractNameFromID(text);
+    
+    if (extractedName) {
+      console.log('✅ FINAL RESULT: Name extracted successfully!');
+      console.log('👤 Extracted Name: ', extractedName);
+    } else {
+      console.log('❌ FINAL RESULT: No valid name found');
+    }
+    
+    return {
+      success: !!extractedName,
+      name: extractedName,
+      rawText: text,
+      message: extractedName 
+        ? 'Name extracted successfully!' 
+        : 'Could not extract name from ID. Please try again or enter manually.'
+    };
+    
+  } catch (error) {
+    console.error('OCR processing error:', error);
+    return {
+      success: false,
+      name: null,
+      rawText: '',
+      message: 'Failed to process ID image. Please try again.',
+      error: error.message
+    };
+  }
+};
+
+/**
+ * Extract name from OCR text - Enhanced for Philippine IDs
+ * @param {string} text - Raw OCR text
+ * @returns {string|null} - Extracted name or null
+ */
+export const extractNameFromID = (text) => {
+  const lines = text.split('\n').map(line => line.trim().toUpperCase()).filter(line => line.length > 0);
+  
+  console.log(`\n📋 OCR Processing Lines (Total: ${lines.length} )`);
+  lines.forEach((line, index) => {
+    console.log(`  [${index}]: ${line}`);
+  });
+
+  // Try PhilHealth ID first
+  console.log('\n🏥 === TRYING PHILHEALTH ID FORMAT ===');
+  const philhealthName = extractPhilHealthName(lines);
+  if (philhealthName) {
+    console.log('✅ PhilHealth ID name extracted:', philhealthName);
+    return philhealthName;
+  }
+
+  // Try Driver's License
+  console.log('\n🚗 === TRYING DRIVER\'S LICENSE FORMAT ===');
+  const driversLicenseName = extractDriversLicenseName(lines);
+  if (driversLicenseName) {
+    console.log('✅ Driver\'s License name extracted:', driversLicenseName);
+    return driversLicenseName;
+  }
+
+  // Try generic patterns
+  console.log('\n🔍 === TRYING GENERIC NAME PATTERNS ===');
+  const genericName = extractGenericName(lines);
+  if (genericName) {
+    console.log('✅ Generic name pattern found:', genericName);
+    return genericName;
+  }
+  
+  console.log('\n❌ No valid name found in OCR text');
+  return null;
+};
+
+/**
+ * Extract name from PhilHealth ID format
+ * Format: "LASTNAME, FIRSTNAME MIDDLENAME"
+ * The name appears after the PIN number (format: XX-XXXXXXXXX-X)
+ * @param {string[]} lines - Array of OCR text lines
+ * @returns {string|null} - Extracted PhilHealth name or null
+ */
+export const extractPhilHealthName = (lines) => {
+  // PhilHealth PIN pattern: XX-XXXXXXXXX-X (e.g., 02-027886864-9, 19-025542778-8)
+  // We detect PhilHealth by finding this PIN pattern, not by text keywords
+  // (OCR often misreads "PhilHealth" text on the card)
+  const pinPattern = /\b\d{2}[-\s]?\d{9}[-\s]?\d{1}\b/;
+  
+  console.log('🔍 Looking for PhilHealth PIN pattern...');
+  
+  let pinLineIndex = -1;
+  
+  // Find the line with the PIN
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    if (pinPattern.test(line)) {
+      pinLineIndex = i;
+      console.log(`📍 Found PhilHealth PIN at line ${i}:`, line);
+      break;
+    }
+  }
+  
+  // If no PIN found, this is not a PhilHealth ID
+  if (pinLineIndex === -1) {
+    console.log('⚠️ No PhilHealth PIN found - not a PhilHealth ID');
+    return null;
+  }
+  
+  console.log('✅ PhilHealth PIN detected! Looking for name on next lines...');
+  
+  // Strategy 1: Look at lines immediately after PIN
+  if (pinLineIndex !== -1) {
+    for (let i = pinLineIndex + 1; i < Math.min(pinLineIndex + 4, lines.length); i++) {
+      const line = lines[i].trim();
+      
+      console.log(`🔎 Checking line [${i}] (after PIN): "${line}"`);
+      
+      // Skip empty lines
+      if (line.length < 5) {
+        console.log('  ❌ Too short');
+        continue;
+      }
+      
+      // Skip lines that are clearly not names
+      if (line.includes('APRIL') || line.includes('JANUARY') || 
+          line.includes('FEBRUARY') || line.includes('MARCH') ||
+          line.includes('MAY') || line.includes('JUNE') ||
+          line.includes('JULY') || line.includes('AUGUST') ||
+          line.includes('SEPTEMBER') || line.includes('OCTOBER') ||
+          line.includes('NOVEMBER') || line.includes('DECEMBER') ||
+          line.includes('SIGNATURE') || line.includes('VALID') ||
+          /\d{4}/.test(line) || // Skip lines with years
+          /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA/i.test(line)) { // Skip address lines
+        console.log('  ❌ Contains date/address keywords');
+        continue;
+      }
+      
+      // NEW: Try to extract name pattern from messy line
+      // Look for pattern: LASTNAME, FIRSTNAME MIDDLENAME (with potential junk before/after)
+      const namePattern = /([A-Z]{2,20})\s*,\s*([A-Z\s]{5,40})/;
+      const match = line.match(namePattern);
+      
+      if (match) {
+        const extractedPart = match[0]; // The matched name part only
+        console.log(`  🔍 Found name pattern: "${extractedPart}"`);
+        
+        // Validate just the extracted part
+        if (isValidPhilHealthName(extractedPart)) {
+          const extractedName = cleanPhilHealthName(extractedPart);
+          console.log('✅ VALID NAME FOUND:', extractedName);
+          return extractedName;
+        } else {
+          console.log('  ❌ Extracted part failed validation');
+        }
+      }
+      
+      // Fallback: Try validating the whole line
+      if (isValidPhilHealthName(line)) {
+        const extractedName = cleanPhilHealthName(line);
+        console.log('✅ VALID NAME FOUND (whole line):', extractedName);
+        return extractedName;
+      } else {
+        console.log('  ❌ No valid name pattern found');
+      }
+    }
+  }
+  
+  // Strategy 2: Look for comma-separated name pattern anywhere
+  console.log('Strategy 2: Looking for comma-separated name pattern...');
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip header and footer lines
+    if (line.includes('REPUBLIC') || line.includes('PHILIPPINES') || 
+        line.includes('PHILHEALTH') || line.includes('HEALTH INSURANCE') ||
+        line.includes('CORPORATION') || line.includes('SIGNATURE') ||
+        pinPattern.test(line)) {
+      continue;
+    }
+    
+    // Skip date/address lines
+    if (/\d{4}/.test(line) || 
+        /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA/i.test(line)) {
+      continue;
+    }
+    
+    // PhilHealth name format: LASTNAME, FIRSTNAME MIDDLENAME
+    if (line.includes(',') && isValidPhilHealthName(line)) {
+      const extractedName = cleanPhilHealthName(line);
+      console.log('✅ PhilHealth name found (pattern match):', extractedName);
+      return extractedName;
+    }
+  }
+  
+  // Strategy 3: Look for longest line with only letters and spaces (no comma required)
+  console.log('Strategy 3: Looking for longest name-like line...');
+  
+  let longestNameLine = '';
+  let maxLength = 0;
+  
+  for (let line of lines) {
+    // Skip header/footer
+    if (line.includes('REPUBLIC') || line.includes('PHILIPPINES') || 
+        line.includes('PHILHEALTH') || line.includes('HEALTH') ||
+        line.includes('INSURANCE') || line.includes('CORPORATION') ||
+        line.includes('SIGNATURE') || pinPattern.test(line)) {
+      continue;
+    }
+    
+    // Skip date/address lines
+    if (/\d/.test(line) || 
+        /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA/i.test(line)) {
+      continue;
+    }
+    
+    // Only letters and spaces
+    if (/^[A-Z\s]+$/.test(line) && line.length >= 15 && line.length <= 50) {
+      const words = line.split(/\s+/).filter(w => w.length > 0);
+      
+      // Must have at least 3 words (First Middle Last) or (First Last)
+      if (words.length >= 2 && words.length <= 5) {
+        if (line.length > maxLength) {
+          maxLength = line.length;
+          longestNameLine = line;
+        }
+      }
+    }
+  }
+  
+  if (longestNameLine) {
+    console.log('✅ PhilHealth name found (longest line):', longestNameLine);
+    return longestNameLine.trim();
+  }
+  
+  console.log('❌ Could not extract PhilHealth name');
+  return null;
+};
+
+/**
+ * Check if a line contains a valid PhilHealth name
+ * @param {string} line - Text line to validate
+ * @returns {boolean} - True if valid PhilHealth name
+ */
+export const isValidPhilHealthName = (line) => {
+  if (!line || line.length < 10 || line.length > 60) {
+    return false;
+  }
+
+  // Remove comma for validation
+  const cleanLine = line.replace(',', ' ').trim();
+  
+  // Must contain mostly letters and spaces (allow some OCR errors)
+  const letterCount = (cleanLine.match(/[A-Z]/g) || []).length;
+  const totalCount = cleanLine.replace(/\s/g, '').length;
+  
+  if (letterCount / totalCount < 0.85) { // At least 85% letters
+    return false;
+  }
+  
+  // Split into words
+  const words = cleanLine.split(/\s+/).filter(w => w.length > 0);
+  
+  // Must have 2-5 words
+  if (words.length < 2 || words.length > 5) {
+    return false;
+  }
+  
+  // Each word should be at least 2 characters
+  if (words.some(w => w.length < 2)) {
+    return false;
+  }
+  
+  // Should not contain institutional terms
+  const institutionalTerms = ['CORPORATION', 'DEPARTMENT', 'GOVERNMENT', 
+                              'REPUBLIC', 'SIGNATURE', 'INSURANCE', 'HEALTH',
+                              'PHILIPPINE', 'PHILIPPINES'];
+  
+  const hasInstitutionalTerms = words.some(word => 
+    institutionalTerms.some(term => word.includes(term))
+  );
+  
+  return !hasInstitutionalTerms;
+};
+
+/**
+ * Clean and format the PhilHealth name
+ * Format from: "LASTNAME, FIRSTNAME MIDDLENAME"
+ * Format to: "FIRSTNAME MIDDLENAME LASTNAME"
+ * @param {string} nameString - Raw name string from OCR
+ * @returns {string|null} - Cleaned PhilHealth name
+ */
+export const cleanPhilHealthName = (nameString) => {
+  if (!nameString) return null;
+  
+  // If it has a comma, split by comma
+  if (nameString.includes(',')) {
+    const parts = nameString.split(',').map(p => p.trim());
+    
+    if (parts.length === 2) {
+      const lastName = parts[0].trim();
+      const firstMiddle = parts[1].trim();
+      return `${firstMiddle} ${lastName}`;
+    }
+  }
+  
+  // Otherwise return as-is (already in correct format or no comma detected)
+  return nameString.trim();
+};
+
+/**
+ * Extract name from Philippine Driver's License format
+ * @param {string[]} lines - Array of OCR text lines
+ * @returns {string|null} - Extracted driver's license name or null
+ */
+export const extractDriversLicenseName = (lines) => {
+  const namePattern = /([A-Z\s]+),\s*([A-Z\s]+)/;
+  
+  for (let line of lines) {
+    if (line.includes('REPUBLIC') || line.includes('PHILIPPINES') || 
+        line.includes('DEPARTMENT') || line.includes('TRANSPORTATION') ||
+        line.includes('DRIVER') || line.includes('LICENSE')) {
+      continue;
+    }
+    
+    const nameMatch = line.match(namePattern);
+    if (nameMatch) {
+      const lastName = nameMatch[1].trim();
+      const firstMiddle = nameMatch[2].trim();
+      return `${firstMiddle} ${lastName}`;
+    }
+  }
+  
+  return null;
+};
+
+/**
+ * Extract name using generic patterns (fallback method)
+ * @param {string[]} lines - Array of OCR text lines
+ * @returns {string|null} - Extracted generic name or null
+ */
+export const extractGenericName = (lines) => {
+  for (let line of lines) {
+    if (line.length > 8 && line.length < 60 && 
+        /^[A-Z\s\.]+$/.test(line) && 
+        !line.includes('MALE') && !line.includes('FEMALE') &&
+        !line.includes('PHL') && !line.includes('NCR') &&
+        !line.includes('REPUBLIC') && !line.includes('PHILIPPINES')) {
+      
+      const words = line.split(/\s+/).filter(word => word.length > 1);
+      if (words.length >= 2 && words.length <= 5) {
+        return line.trim();
+      }
+    }
+  }
+  
+  return null;
+};
+
+/**
+ * Utility function to check if camera is available
+ * @returns {boolean} - True if camera API is available
+ */
+export const isCameraAvailable = () => {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+};
+
+/**
+ * Initialize camera stream for ID scanning
+ * @returns {Promise<MediaStream>} - Camera stream
+ */
+export const initializeCamera = async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Camera API not supported in this browser or requires HTTPS');
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      video: { 
+        facingMode: 'environment',
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      } 
+    });
+    
+    return stream;
+  } catch (err) {
+    let errorMessage = '';
+    
+    if (err.name === 'NotAllowedError') {
+      errorMessage = 'Camera permission denied. Please allow camera access and try again.';
+    } else if (err.name === 'NotFoundError') {
+      errorMessage = 'No camera found on this device.';
+    } else if (err.name === 'NotSupportedError') {
+      errorMessage = 'Camera not supported on this device or browser.';
+    } else {
+      errorMessage = 'Camera access failed. Please try again or enter information manually.';
+    }
+    
+    throw new Error(errorMessage);
+  }
+};
+
+/**
+ * Cleanup camera stream
+ * @param {MediaStream} stream - Camera stream to cleanup
+ */
+export const cleanupCamera = (stream) => {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+};
+
+/**
+ * Capture image from video element
+ * @param {HTMLVideoElement} videoElement - Video element to capture from
+ * @returns {string} - Base64 image data
+ */
+export const captureImageFromVideo = (videoElement) => {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  
+  canvas.width = videoElement.videoWidth;
+  canvas.height = videoElement.videoHeight;
+  context.drawImage(videoElement, 0, 0);
+  
+  return canvas.toDataURL('image/jpeg', 0.8);
+};
+
+export default {
+  processIDWithOCR,
+  extractNameFromID,
+  extractPhilHealthName,
+  isValidPhilHealthName,
+  cleanPhilHealthName,
+  extractDriversLicenseName,
+  isCameraAvailable,
+  initializeCamera,
+  cleanupCamera,
+  captureImageFromVideo
+};
