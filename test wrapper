@@ -1,0 +1,600 @@
+// ocr_test_wrapper.mjs
+// Wrapper script for testing tesseractOCR.js from Python
+// Uses ES6 modules - outputs clean JSON to stdout
+
+import Tesseract from 'tesseract.js';
+import fs from 'fs';
+
+/**
+ * Enhanced text preprocessing using pattern recognition
+ */
+function preprocessOCRText(text) {
+  let processed = text;
+  
+  // 1. Normalize whitespace intelligently
+  processed = processed.replace(/\s+/g, ' ').trim();
+  
+  // 2. Fix split words using statistical analysis
+  processed = mergeSplitWords(processed);
+  
+  // 3. Fix common OCR character confusions using context
+  processed = fixCharacterConfusions(processed);
+  
+  // 4. Remove excessive spaces between letters in words
+  processed = processed.replace(/\b([A-Z])\s+([A-Z])\s+([A-Z])\s+([A-Z])/g, '$1$2$3$4');
+  processed = processed.replace(/\b([A-Z])\s+([A-Z])\s+([A-Z])/g, '$1$2$3');
+  
+  return processed;
+}
+
+/**
+ * Merge split words using word length and spacing patterns
+ */
+function mergeSplitWords(text) {
+  const lines = text.split('\n');
+  const mergedLines = [];
+  
+  for (let line of lines) {
+    const words = line.split(/\s+/);
+    const merged = [];
+    let i = 0;
+    
+    while (i < words.length) {
+      const currentWord = words[i];
+      
+      // If current word is very short (1-2 chars) and next word exists
+      if (currentWord.length <= 2 && i + 1 < words.length) {
+        const nextWord = words[i + 1];
+        
+        // If next word is also short, likely they belong together
+        if (nextWord.length <= 3) {
+          const potentialMerge = currentWord + nextWord;
+          if (potentialMerge.length >= 4 && potentialMerge.length <= 12) {
+            merged.push(potentialMerge);
+            i += 2;
+            continue;
+          }
+        }
+      }
+      
+      merged.push(currentWord);
+      i++;
+    }
+    
+    mergedLines.push(merged.join(' '));
+  }
+  
+  return mergedLines.join('\n');
+}
+
+/**
+ * Fix character confusions using positional context
+ */
+function fixCharacterConfusions(text) {
+  let fixed = text;
+  
+  // Fix digit-letter confusions at word boundaries
+  fixed = fixed.replace(/\b0([A-Z]+)\b/g, 'O$1');
+  fixed = fixed.replace(/\b([A-Z]+)0\b/g, '$1O');
+  
+  // 1 in letter context likely "I" or "L"
+  fixed = fixed.replace(/\b1([A-Z]{2,})\b/g, 'I$1');
+  fixed = fixed.replace(/\b([A-Z]{2,})1\b/g, '$1I');
+  
+  // 5 in letter context might be "S"
+  fixed = fixed.replace(/\b([A-Z])5([A-Z])\b/g, '$1S$2');
+  
+  // 8 might be "B"
+  fixed = fixed.replace(/\b8([A-Z]{3,})\b/g, 'B$1');
+  
+  return fixed;
+}
+
+/**
+ * Calculate name confidence score based on linguistic patterns
+ */
+function calculateNameConfidence(name, source) {
+  let score = 0;
+  
+  if (!name) return 0;
+  
+  const words = name.split(/\s+/).filter(w => w.length > 0);
+  
+  // 1. Word count scoring (2-4 words is typical for Filipino names)
+  if (words.length === 3) score += 30;
+  else if (words.length === 4) score += 25;
+  else if (words.length === 2) score += 15;
+  else score += 5;
+  
+  // 2. Word length distribution
+  const avgWordLength = words.reduce((sum, w) => sum + w.length, 0) / words.length;
+  if (avgWordLength >= 5 && avgWordLength <= 8) score += 20;
+  else if (avgWordLength >= 4 && avgWordLength <= 9) score += 10;
+  
+  // 3. Consonant-vowel ratio
+  const vowelCount = (name.match(/[AEIOU]/g) || []).length;
+  const consonantCount = (name.match(/[BCDFGHJKLMNPQRSTVWXYZ]/g) || []).length;
+  const ratio = vowelCount / (consonantCount + vowelCount);
+  if (ratio >= 0.3 && ratio <= 0.5) score += 20;
+  
+  // 4. No repeated characters
+  const hasRepeatedChars = /([A-Z])\1{2,}/.test(name);
+  if (!hasRepeatedChars) score += 15;
+  
+  // 5. Ends with common suffix patterns
+  if (/[AEONS]$/.test(name)) score += 10;
+  
+  // 6. Source-based bonus
+  if (source === 'philhealth' || source === 'drivers') score += 15;
+  
+  // 7. Capitalization consistency
+  if (name === name.toUpperCase()) score += 10;
+  
+  return score;
+}
+
+/**
+ * Statistical outlier removal for artifact cleaning
+ */
+function removeArtifactsStatistical(nameString) {
+  const words = nameString.trim().split(/\s+/);
+  
+  if (words.length <= 2) return nameString;
+  
+  // Calculate statistics
+  const lengths = words.map(w => w.length);
+  const avgLength = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+  const stdDev = Math.sqrt(
+    lengths.reduce((sum, len) => sum + Math.pow(len - avgLength, 2), 0) / lengths.length
+  );
+  
+  // Filter out statistical outliers
+  const cleaned = words.filter((word, index) => {
+    // Keep suffixes
+    if (/^(JR|SR|II|III|IV)$/i.test(word)) return true;
+    
+    // Keep words within 2 standard deviations
+    const deviation = Math.abs(word.length - avgLength);
+    if (deviation <= 2 * stdDev) return true;
+    
+    // Keep middle initials
+    if (word.length === 1 && index === 2) return true;
+    
+    return false;
+  });
+  
+  return cleaned.join(' ');
+}
+
+/**
+ * Process ID with OCR - Standalone version for testing
+ */
+async function processIDWithOCR(imageData) {
+  try {
+    process.stderr.write('🚀 Starting OCR processing...\n');
+    
+    const { data: { text } } = await Tesseract.recognize(imageData, 'eng', {
+      logger: () => {},
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ ,.-0123456789',
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+    });
+    
+    process.stderr.write('📄 OCR Raw Text completed\n');
+    
+    // Use intelligent preprocessing
+    const processedText = preprocessOCRText(text);
+    
+    process.stderr.write('📝 Text preprocessing applied\n');
+    
+    const extractedName = extractNameFromID(processedText);
+    
+    return {
+      success: !!extractedName,
+      name: extractedName,
+      rawText: text,
+      correctedText: processedText,
+      message: extractedName 
+        ? 'Name extracted successfully!' 
+        : 'Could not extract name from ID.'
+    };
+    
+  } catch (error) {
+    process.stderr.write(`OCR processing error: ${error}\n`);
+    return {
+      success: false,
+      name: null,
+      rawText: '',
+      correctedText: '',
+      message: 'Failed to process ID image.',
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Extract name from OCR text with multi-strategy voting
+ */
+function extractNameFromID(text) {
+  const lines = text.split('\n').map(line => line.trim().toUpperCase()).filter(line => line.length > 0);
+  
+  // Collect candidates from different strategies
+  const candidates = [];
+  
+  // Try PhilHealth ID first
+  const philhealthName = extractPhilHealthName(lines);
+  if (philhealthName) {
+    candidates.push({
+      name: philhealthName,
+      confidence: calculateNameConfidence(philhealthName, 'philhealth'),
+      source: 'philhealth'
+    });
+  }
+
+  // Try Driver's License
+  const driversLicenseName = extractDriversLicenseName(lines);
+  if (driversLicenseName) {
+    candidates.push({
+      name: driversLicenseName,
+      confidence: calculateNameConfidence(driversLicenseName, 'drivers'),
+      source: 'drivers'
+    });
+  }
+
+  // Try generic patterns
+  const genericName = extractGenericName(lines);
+  if (genericName) {
+    candidates.push({
+      name: genericName,
+      confidence: calculateNameConfidence(genericName, 'generic'),
+      source: 'generic'
+    });
+  }
+  
+  // Return highest confidence candidate
+  if (candidates.length === 0) return null;
+  
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  return candidates[0].name;
+}
+
+/**
+ * Extract PhilHealth name with confidence scoring
+ */
+function extractPhilHealthName(lines) {
+  const pinPattern = /\d{2}[-.\s]?\d{9}[-.\s]?\d{1}/;
+  
+  let pinLineIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    if (pinPattern.test(lines[i])) {
+      pinLineIndex = i;
+      break;
+    }
+  }
+  
+  if (pinLineIndex === -1) return null;
+  
+  const candidates = [];
+  
+  // Look at lines after PIN
+  for (let i = pinLineIndex + 1; i < Math.min(pinLineIndex + 5, lines.length); i++) {
+    let line = lines[i].trim();
+    
+    if (line.length < 5) continue;
+    
+    // Skip date/address lines
+    if (line.includes('APRIL') || line.includes('JANUARY') || 
+        line.includes('FEBRUARY') || line.includes('MARCH') ||
+        line.includes('MAY') || line.includes('JUNE') ||
+        line.includes('JULY') || line.includes('AUGUST') ||
+        line.includes('SEPTEMBER') || line.includes('OCTOBER') ||
+        line.includes('NOVEMBER') || line.includes('DECEMBER') ||
+        line.includes('SIGNATURE') || line.includes('VALID') ||
+        /\d{4}/.test(line) || 
+        /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA|QUEZON|CEBU|DAVAO/i.test(line)) {
+      continue;
+    }
+    
+    // Try to extract name pattern from line
+    const namePattern = /([A-Z]{2,20})\s*,\s*([A-Z\s]{5,50})/;
+    const match = line.match(namePattern);
+    
+    if (match) {
+      const extractedPart = match[0];
+      const confidence = calculateNameConfidence(extractedPart, 'philhealth');
+      
+      if (confidence > 40) {
+        candidates.push({
+          name: cleanPhilHealthName(extractedPart),
+          confidence: confidence
+        });
+      }
+    }
+    
+    // Fallback: Try whole line
+    const wholeLineConfidence = calculateNameConfidence(line, 'philhealth');
+    if (wholeLineConfidence > 40) {
+      candidates.push({
+        name: cleanPhilHealthName(line),
+        confidence: wholeLineConfidence
+      });
+    }
+  }
+  
+  // Strategy 2: Look for comma-separated name pattern anywhere
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    if (line.includes('REPUBLIC') || line.includes('PHILIPPINES') || 
+        line.includes('PHILHEALTH') || line.includes('HEALTH INSURANCE') ||
+        line.includes('CORPORATION') || line.includes('SIGNATURE') ||
+        pinPattern.test(line)) {
+      continue;
+    }
+    
+    if (/\d{4}/.test(line) || 
+        /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA|QUEZON|CEBU|DAVAO/i.test(line)) {
+      continue;
+    }
+    
+    if (line.includes(',')) {
+      const confidence = calculateNameConfidence(line, 'philhealth');
+      if (confidence > 40) {
+        candidates.push({
+          name: cleanPhilHealthName(line),
+          confidence: confidence
+        });
+      }
+    }
+  }
+  
+  // Strategy 3: Look for longest name-like line
+  let longestNameLine = '';
+  let maxLength = 0;
+  
+  for (let line of lines) {
+    if (line.includes('REPUBLIC') || line.includes('PHILIPPINES') || 
+        line.includes('PHILHEALTH') || line.includes('HEALTH') ||
+        line.includes('INSURANCE') || line.includes('CORPORATION') ||
+        line.includes('SIGNATURE') || pinPattern.test(line)) {
+      continue;
+    }
+    
+    if (/\d/.test(line) || 
+        /STREET|DISTRICT|CITY|BARANGAY|BGY|PACO|TONDO|MANILA|QUEZON|CEBU|DAVAO/i.test(line)) {
+      continue;
+    }
+    
+    if (/^[A-Z\s]+$/.test(line) && line.length >= 10 && line.length <= 60) {
+      const words = line.split(/\s+/).filter(w => w.length > 0);
+      
+      if (words.length >= 2 && words.length <= 5) {
+        if (line.length > maxLength) {
+          maxLength = line.length;
+          longestNameLine = line;
+        }
+      }
+    }
+  }
+  
+  if (longestNameLine) {
+    const confidence = calculateNameConfidence(longestNameLine, 'philhealth');
+    candidates.push({
+      name: longestNameLine.trim(),
+      confidence: confidence
+    });
+  }
+  
+  // Return highest confidence candidate
+  if (candidates.length === 0) return null;
+  
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  return candidates[0].name;
+}
+
+/**
+ * Clean PhilHealth name
+ */
+function cleanPhilHealthName(nameString) {
+  if (!nameString) return null;
+  
+  let cleaned = nameString.replace(/\s+/g, ' ').trim();
+  
+  if (cleaned.includes(',')) {
+    const parts = cleaned.split(',').map(p => p.trim());
+    if (parts.length === 2) {
+      const lastName = parts[0].trim();
+      const firstMiddle = parts[1].trim();
+      return `${firstMiddle} ${lastName}`;
+    }
+  }
+  
+  return cleaned;
+}
+
+/**
+ * Extract Driver's License name - FIXED FOR PHILIPPINE FORMAT
+ */
+function extractDriversLicenseName(lines) {
+  process.stderr.write('🚗 Analyzing Driver\'s License format...\n');
+  
+  // Philippine Driver's License format: "LASTNAME, FIRSTNAME MIDDLENAME1 MIDDLENAME2"
+  // Example: "MENDOZA, ROSS JOHN ESTACIO"
+  
+  const fullText = lines.join(' ');
+  
+  // Strategy 1: 4-word name pattern (LASTNAME, FIRST MIDDLE1 MIDDLE2)
+  const namePattern4 = /\b([A-Z]{3,20}),\s+([A-Z]{3,15})\s+([A-Z]{3,15})\s+([A-Z]{3,15})\b/g;
+  
+  let bestMatch = null;
+  let bestScore = 0;
+  let match;
+  
+  while ((match = namePattern4.exec(fullText)) !== null) {
+    const lastName = match[1];      // MENDOZA
+    const firstName = match[2];     // ROSS
+    const middle1 = match[3];       // JOHN
+    const middle2 = match[4];       // ESTACIO
+    
+    // Skip institutional terms
+    if (lastName.includes('REPUBLIC') || lastName.includes('DEPARTMENT') || 
+        lastName.includes('TRANSPORTATION') || lastName.includes('LICENSE') ||
+        lastName.includes('NATIONALITY') || lastName.includes('ADDRESS') ||
+        firstName.includes('SEX') || firstName.includes('DATE') || 
+        firstName.includes('BIRTH') || firstName.includes('MALE')) {
+      continue;
+    }
+    
+    // Skip if any word is too short (likely OCR junk)
+    if (lastName.length <= 2 || firstName.length <= 2 || 
+        middle1.length <= 2 || middle2.length <= 2) {
+      continue;
+    }
+    
+    // Calculate score
+    const totalLength = lastName.length + firstName.length + middle1.length + middle2.length;
+    const avgLength = totalLength / 4;
+    const variance = Math.abs(lastName.length - avgLength) + 
+                    Math.abs(firstName.length - avgLength) + 
+                    Math.abs(middle1.length - avgLength) + 
+                    Math.abs(middle2.length - avgLength);
+    
+    const score = totalLength - variance;
+    
+    if (score > bestScore) {
+      bestScore = score;
+      // Return in natural order: FIRST MIDDLE1 MIDDLE2 LAST
+      bestMatch = `${firstName} ${middle1} ${middle2} ${lastName}`;
+    }
+  }
+  
+  if (bestMatch) {
+    process.stderr.write(`✅ Driver's License name found (4-word): ${bestMatch}\n`);
+    return bestMatch;
+  }
+  
+  // Strategy 2: 3-word name pattern (LASTNAME, FIRST MIDDLE)
+  const namePattern3 = /\b([A-Z]{3,20}),\s+([A-Z]{3,15})\s+([A-Z]{3,15})\b/g;
+  
+  bestMatch = null;
+  bestScore = 0;
+  
+  while ((match = namePattern3.exec(fullText)) !== null) {
+    const lastName = match[1];
+    const firstName = match[2];
+    const middleName = match[3];
+    
+    // Skip institutional terms
+    if (lastName.includes('REPUBLIC') || lastName.includes('DEPARTMENT') || 
+        lastName.includes('TRANSPORTATION') || lastName.includes('LICENSE') ||
+        firstName.includes('SEX') || firstName.includes('DATE') ||
+        firstName.includes('NATIONALITY')) {
+      continue;
+    }
+    
+    // Skip short words
+    if (lastName.length <= 2 || firstName.length <= 2 || middleName.length <= 2) {
+      continue;
+    }
+    
+    const score = lastName.length + firstName.length + middleName.length;
+    
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = `${firstName} ${middleName} ${lastName}`;
+    }
+  }
+  
+  if (bestMatch) {
+    process.stderr.write(`✅ Driver's License name found (3-word): ${bestMatch}\n`);
+    return bestMatch;
+  }
+  
+  // Strategy 3: Look for PhilHealth-style pattern as fallback
+  // This handles cases where the name might be formatted differently
+  const philhealthPattern = /\b([A-Z]{3,20}),\s+([A-Z]{3,15})\s+([A-Z]{3,15})\s+([A-Z]{3,15})\s+([A-Z]{3,20})\b/g;
+  
+  while ((match = philhealthPattern.exec(fullText)) !== null) {
+    // Try different interpretations of 5-word pattern
+    const words = [match[1], match[2], match[3], match[4], match[5]];
+    
+    // Filter out institutional terms
+    const validWords = words.filter(w => 
+      !w.includes('REPUBLIC') && 
+      !w.includes('DEPARTMENT') && 
+      !w.includes('SEX') && 
+      !w.includes('DATE') &&
+      w.length >= 3
+    );
+    
+    if (validWords.length >= 4) {
+      bestMatch = validWords.join(' ');
+      process.stderr.write(`✅ Driver's License name found (multi-word): ${bestMatch}\n`);
+      return bestMatch;
+    }
+  }
+  
+  process.stderr.write('❌ Could not extract driver\'s license name\n');
+  return null;
+}
+
+/**
+ * Extract generic name
+ */
+function extractGenericName(lines) {
+  for (let line of lines) {
+    if (line.length < 8 || line.length > 60) continue;
+    
+    if (!/^[A-Z\s\.]+$/.test(line)) continue;
+    
+    if (line.includes('MALE') || line.includes('FEMALE') ||
+        line.includes('PHL') || line.includes('NCR') ||
+        line.includes('REPUBLIC') || line.includes('PHILIPPINES') ||
+        line.includes('SIGNATURE') || line.includes('DATE')) {
+      continue;
+    }
+    
+    const words = line.split(/\s+/).filter(word => word.length > 1);
+    
+    if (words.length >= 2 && words.length <= 5) {
+      return line.trim();
+    }
+  }
+  
+  return null;
+}
+
+// Main execution
+async function main() {
+  try {
+    const imagePath = process.argv[2];
+    
+    if (!imagePath) {
+      process.stderr.write('Usage: node ocr_test_wrapper.mjs <image_path>\n');
+      process.exit(1);
+    }
+    
+    if (!fs.existsSync(imagePath)) {
+      process.stderr.write(`Error: Image file not found: ${imagePath}\n`);
+      process.exit(1);
+    }
+    
+    const imageBuffer = fs.readFileSync(imagePath);
+    const base64Image = 'data:image/jpeg;base64,' + imageBuffer.toString('base64');
+    
+    const result = await processIDWithOCR(base64Image);
+    
+    console.log(JSON.stringify(result, null, 2));
+    
+    process.exit(result.success ? 0 : 1);
+    
+  } catch (error) {
+    console.log(JSON.stringify({
+      success: false,
+      error: error.message
+    }, null, 2));
+    process.exit(1);
+  }
+}
+
+main();
