@@ -1,0 +1,4 @@
+condition,Correct,Avg Char Accuracy,True Positives,Total Tests,Accuracy Rate (%)
+Blurry,9,62.59,9,14,64.29
+Clear,8,75.75,8,11,72.73
+Tilted,11,47.11,11,26,42.31

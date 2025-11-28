@@ -1,0 +1,31 @@
+{
+  "test_date": "2025-11-28 23:15:49",
+  "test_type": "Actual Data Testing with Confusion Matrix",
+  "sample_size": 51,
+  "confusion_matrix": {
+    "true_positives": 43,
+    "false_positives": 6,
+    "false_negatives": 2,
+    "true_negatives": 0
+  },
+  "metrics": {
+    "accuracy": 84.31372549019608,
+    "precision": 87.75510204081633,
+    "recall": 95.55555555555556,
+    "f1_score": 91.48936170212767,
+    "character_recognition_rate": 88.64555052790347,
+    "field_extraction_success_rate": 96.07843137254902,
+    "avg_processing_time": 22.927631214553234
+  },
+  "targets": {
+    "accuracy": 80,
+    "crr": 86,
+    "fesr": 90
+  },
+  "overall_performance": {
+    "passed_metrics": 3,
+    "total_metrics": 3,
+    "pass_rate": 100.0,
+    "status": "PASS"
+  }
+}

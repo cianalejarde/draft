@@ -1,0 +1,3 @@
+id_type,Correct,Avg Char Accuracy,True Positives,Total Tests,Accuracy Rate (%)
+DriversLicense,12,84.94,12,17,70.59
+PhilHealth,29,90.5,31,34,91.18
