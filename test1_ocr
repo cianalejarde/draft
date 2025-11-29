@@ -1,0 +1,815 @@
+"""
+CliCare Objective 1 - OCR Technology Performance Testing with Confusion Matrix
+================================================================================
+Tests OCR accuracy on Philippine ID cards using actual tesseractOCR.js implementation
+Analyzes real PhilHealth ID and Driver's License extraction results with confusion matrix
+
+Requirements:
+- Node.js installed
+- ocr_test_wrapper.mjs file in same directory (ES6 module wrapper)
+- package.json with "type": "module" configured
+- Test images in ./test_images/ directory
+- test_images_ground_truth.csv with expected results
+
+Run: python test1_ocr.py
+"""
+
+import pandas as pd
+import numpy as np
+import json
+import time
+import subprocess
+import os
+from datetime import datetime
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+from sklearn.metrics import confusion_matrix
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+OUTPUT_DIR = "objective1_actual_results/ocr_testing"
+TEST_IMAGES_DIR = "./test_images"
+OCR_WRAPPER = "./ocr_test_wrapper.mjs"
+GROUND_TRUTH_FILE = "./test_images_ground_truth.csv"
+
+# Target metrics (as per research document)
+TARGET_ACCURACY = 80  # ≥80%
+TARGET_CRR = 86  # Character Recognition Rate ≥90%
+TARGET_FESR = 90  # Field Extraction Success Rate ≥88%
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def create_output_directory():
+    """Create output directory for test results"""
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    print(f"✅ Output directory created: {OUTPUT_DIR}")
+
+def print_section_header(title):
+    """Print formatted section header"""
+    print("\n" + "="*80)
+    print(title.center(80))
+    print("="*80 + "\n")
+
+def check_prerequisites():
+    """Check if Node.js and required files exist"""
+    print_section_header("CHECKING PREREQUISITES")
+    
+    # Check Node.js
+    try:
+        result = subprocess.run(['node', '--version'], capture_output=True, text=True)
+        node_version = result.stdout.strip()
+        print(f"✅ Node.js found: {node_version}")
+    except FileNotFoundError:
+        print("❌ Node.js not found. Please install Node.js first.")
+        return False
+    
+    # Check OCR wrapper script
+    if not os.path.exists(OCR_WRAPPER):
+        print(f"❌ OCR wrapper script not found: {OCR_WRAPPER}")
+        print("   Please ensure ocr_test_wrapper.mjs is in the current directory")
+        return False
+    print(f"✅ OCR wrapper found: {OCR_WRAPPER}")
+    
+    # Check test images directory
+    if not os.path.exists(TEST_IMAGES_DIR):
+        print(f"⚠️  Test images directory not found: {TEST_IMAGES_DIR}")
+        print("   Creating directory and instructions for adding test images...")
+        Path(TEST_IMAGES_DIR).mkdir(parents=True, exist_ok=True)
+        create_test_images_instructions()
+        return False
+    
+    # Check for test images
+    image_files = list(Path(TEST_IMAGES_DIR).glob("*.jpg")) + list(Path(TEST_IMAGES_DIR).glob("*.png"))
+    if not image_files:
+        print(f"⚠️  No test images found in {TEST_IMAGES_DIR}")
+        create_test_images_instructions()
+        return False
+    
+    print(f"✅ Found {len(image_files)} test images")
+    
+    # Check for ground truth CSV
+    if not os.path.exists(GROUND_TRUTH_FILE):
+        print(f"⚠️  Ground truth file not found: {GROUND_TRUTH_FILE}")
+        create_ground_truth_template()
+        return False
+    
+    print(f"✅ Ground truth file found: {GROUND_TRUTH_FILE}")
+    
+    return True
+
+def create_test_images_instructions():
+    """Create instructions file for adding test images"""
+    instructions = """
+CLICARE OCR TESTING - TEST IMAGES SETUP
+========================================
+
+Please add Philippine ID images to the ./test_images/ directory.
+
+REQUIRED TEST IMAGES (Minimum 50 samples as per research):
+-----------------------------------------------------------
+
+PhilHealth IDs:
+- At least 25 PhilHealth ID images
+- Mix of conditions: clear, blurry, tilted, poor lighting, worn
+
+Driver's Licenses:
+- At least 25 Driver's License images  
+- Mix of conditions: clear, worn edges, faded text, tilted
+
+IMAGE REQUIREMENTS:
+-------------------
+- Use actual Philippine ID images (PhilHealth, Driver's License)
+- Ensure images show the name field clearly
+- For PhilHealth IDs, ensure PIN number is visible (XX-XXXXXXXXX-X format)
+- Images should be .jpg or .png format
+- Recommended resolution: At least 1280x720
+
+GROUND TRUTH FILE:
+------------------
+Create a file: test_images_ground_truth.csv with columns:
+- filename: Name of the image file
+- id_type: "PhilHealth" or "DriversLicense"
+- condition: "Clear", "Blurry", "Tilted", "PoorLighting", "Worn", etc.
+- expected_name: The actual name on the ID (as it appears)
+- notes: Optional notes about the image
+
+Example CSV content:
+filename,id_type,condition,expected_name,notes
+philhealth_001.jpg,PhilHealth,Clear,DELA CRUZ JUAN PEDRO,Well-lit scan
+drivers_001.jpg,DriversLicense,Worn,SANTOS MARIA CLARA,Worn edges
+
+PRIVACY NOTICE:
+--------------
+- Use sample/test IDs only or get consent
+- Redact sensitive information if using real IDs for testing
+- Do not commit actual ID images to version control
+"""
+    
+    with open(f"{TEST_IMAGES_DIR}/INSTRUCTIONS.txt", 'w') as f:
+        f.write(instructions)
+    
+    print(f"\n📋 Instructions created: {TEST_IMAGES_DIR}/INSTRUCTIONS.txt")
+
+def create_ground_truth_template():
+    """Create template for ground truth CSV"""
+    template_df = pd.DataFrame({
+        'filename': ['philhealth_001.jpg', 'drivers_001.jpg'],
+        'id_type': ['PhilHealth', 'DriversLicense'],
+        'condition': ['Clear', 'Clear'],
+        'expected_name': ['DELA CRUZ JUAN PEDRO', 'SANTOS MARIA CLARA'],
+        'notes': ['Sample PhilHealth ID', 'Sample Driver\'s License']
+    })
+    
+    template_df.to_csv(GROUND_TRUTH_FILE, index=False)
+    print(f"📋 Ground truth template created: {GROUND_TRUTH_FILE}")
+    print("   Please edit this file with your actual test image information")
+
+def run_ocr_on_image(image_path):
+    """Run Node.js OCR wrapper script on an image and return results"""
+    try:
+        result = subprocess.run(
+            ['node', OCR_WRAPPER, image_path],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=120
+        )
+        
+        # Parse result from stdout
+        if result.returncode in [0, 1]:
+            stdout_lines = result.stdout.strip().split('\n')
+            
+            # Find the JSON output
+            json_str = None
+            for i in range(len(stdout_lines) - 1, -1, -1):
+                line = stdout_lines[i].strip()
+                if line.startswith('{'):
+                    json_lines = []
+                    brace_count = 0
+                    for j in range(i, len(stdout_lines)):
+                        json_lines.append(stdout_lines[j])
+                        brace_count += stdout_lines[j].count('{') - stdout_lines[j].count('}')
+                        if brace_count == 0:
+                            break
+                    json_str = '\n'.join(json_lines)
+                    break
+            
+            if json_str:
+                return json.loads(json_str)
+            else:
+                return {"success": False, "error": "No JSON output found", "stderr": result.stderr}
+                
+        else:
+            return {"success": False, "error": result.stderr if result.stderr else "Unknown error"}
+            
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "OCR processing timeout"}
+    except json.JSONDecodeError as e:
+        return {"success": False, "error": f"Invalid JSON response: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def normalize_name(name):
+    """Normalize name for comparison"""
+    if not name:
+        return ""
+    # Remove extra spaces, commas, convert to uppercase
+    return ' '.join(name.upper().replace(',', '').split())
+
+def calculate_character_accuracy(expected, actual):
+    """Calculate character-level accuracy between expected and actual strings"""
+    if not expected or not actual:
+        return 0.0
+    
+    expected_clean = normalize_name(expected)
+    actual_clean = normalize_name(actual)
+    
+    if len(expected_clean) == 0:
+        return 100.0 if len(actual_clean) == 0 else 0.0
+    
+    # Calculate character matches
+    matches = 0
+    min_len = min(len(expected_clean), len(actual_clean))
+    
+    for i in range(min_len):
+        if expected_clean[i] == actual_clean[i]:
+            matches += 1
+    
+    # Calculate accuracy
+    max_len = max(len(expected_clean), len(actual_clean))
+    return (matches / max_len * 100) if max_len > 0 else 0.0
+
+def classify_ocr_result(expected, actual, char_accuracy):
+    """
+    Classify OCR result into confusion matrix categories
+    
+    Returns: 'TP', 'FP', 'FN', or 'TN'
+    
+    Logic:
+    - TP (True Positive): Name extracted AND correct (≥90% accuracy)
+    - FP (False Positive): Name extracted BUT incorrect (<90% accuracy)
+    - FN (False Negative): Name NOT extracted (but should have been)
+    - TN (True Negative): Correctly rejected unreadable segment (not applicable for full ID)
+    """
+    
+    if not actual or len(actual.strip()) == 0:
+        # No name extracted
+        return 'FN'  # False Negative - missed extraction
+    
+    if char_accuracy >=80:
+        # Name extracted and accurate
+        return 'TP'  # True Positive
+    else:
+        # Name extracted but inaccurate
+        return 'FP'  # False Positive
+
+def calculate_confusion_matrix_metrics(tp, fp, fn, tn):
+    """Calculate accuracy, precision, recall, and F1-score"""
+    total = tp + fp + fn + tn
+    
+    # Accuracy = (TP + TN) / (TP + TN + FP + FN)
+    accuracy = ((tp + tn) / total * 100) if total > 0 else 0
+    
+    # Precision = TP / (TP + FP)
+    precision = (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0
+    
+    # Recall = TP / (TP + FN)
+    recall = (tp / (tp + fn) * 100) if (tp + fn) > 0 else 0
+    
+    # F1-Score = 2 × (Precision × Recall) / (Precision + Recall)
+    f1_score = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1_score
+    }
+
+def print_confusion_matrix_computation(results_df):
+    """Print detailed confusion matrix computation"""
+    print_section_header("CONFUSION MATRIX COMPUTATION")
+    
+    # Count confusion matrix values
+    tp = len(results_df[results_df['classification'] == 'TP'])
+    fp = len(results_df[results_df['classification'] == 'FP'])
+    fn = len(results_df[results_df['classification'] == 'FN'])
+    tn = len(results_df[results_df['classification'] == 'TN'])
+    
+    total = len(results_df)
+    
+    print("📊 CONFUSION MATRIX VALUES:")
+    print("="*80)
+    print(f"True Positives (TP):   {tp:3d} - Correctly recognized and accurate text (≥90%)")
+    print(f"False Positives (FP):  {fp:3d} - Extracted but inaccurate text (<90%)")
+    print(f"False Negatives (FN):  {fn:3d} - Missed/failed to extract text")
+    print(f"True Negatives (TN):   {tn:3d} - Correctly rejected unreadable segments")
+    print(f"{'─'*80}")
+    print(f"Total Samples:         {total:3d}")
+    
+    # Calculate metrics
+    metrics = calculate_confusion_matrix_metrics(tp, fp, fn, tn)
+    
+    print(f"\n📈 METRIC CALCULATIONS:")
+    print("="*80)
+    print(f"\n1. ACCURACY (Overall Recognition Correctness)")
+    print(f"   Formula: (TP + TN) / (TP + TN + FP + FN) × 100")
+    print(f"   Computation: ({tp} + {tn}) / ({tp} + {tn} + {fp} + {fn}) × 100")
+    print(f"   Computation: {tp + tn} / {total} × 100")
+    print(f"   Result: {metrics['accuracy']:.2f}%")
+    print(f"   Target: ≥{TARGET_ACCURACY}%")
+    print(f"   Status: {'✅ PASS' if metrics['accuracy'] >= TARGET_ACCURACY else '❌ FAIL'}")
+    
+    print(f"\n2. PRECISION (Positive Predictive Value)")
+    print(f"   Formula: TP / (TP + FP) × 100")
+    print(f"   Computation: {tp} / ({tp} + {fp}) × 100")
+    if tp + fp > 0:
+        print(f"   Computation: {tp} / {tp + fp} × 100")
+    print(f"   Result: {metrics['precision']:.2f}%")
+    print(f"   Meaning: Of all extracted text, {metrics['precision']:.1f}% was accurate")
+    
+    print(f"\n3. RECALL (Sensitivity/True Positive Rate)")
+    print(f"   Formula: TP / (TP + FN) × 100")
+    print(f"   Computation: {tp} / ({tp} + {fn}) × 100")
+    if tp + fn > 0:
+        print(f"   Computation: {tp} / {tp + fn} × 100")
+    print(f"   Result: {metrics['recall']:.2f}%")
+    print(f"   Meaning: Of all text that should be recognized, {metrics['recall']:.1f}% was found")
+    
+    print(f"\n4. F1-SCORE (Harmonic Mean of Precision and Recall)")
+    print(f"   Formula: 2 × (Precision × Recall) / (Precision + Recall)")
+    print(f"   Computation: 2 × ({metrics['precision']:.2f} × {metrics['recall']:.2f}) / ({metrics['precision']:.2f} + {metrics['recall']:.2f})")
+    if metrics['precision'] + metrics['recall'] > 0:
+        print(f"   Computation: 2 × {metrics['precision'] * metrics['recall']:.2f} / {metrics['precision'] + metrics['recall']:.2f}")
+    print(f"   Result: {metrics['f1_score']:.2f}%")
+    
+    return tp, fp, fn, tn, metrics
+
+def create_confusion_matrix_visualization(tp, fp, fn, tn, output_path):
+    """Create confusion matrix visualization"""
+    
+    # Create 2x2 confusion matrix
+    cm_data = np.array([[tp, fn],
+                        [fp, tn]])
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Custom colormap (teal)
+    cmap = plt.cm.Blues
+    im = ax.imshow(cm_data, interpolation='nearest', cmap=cmap)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Number of Cases', rotation=270, labelpad=20, fontsize=12, fontweight='bold')
+    
+    # Set ticks and labels
+    classes = ['Positive\n(Text Present)', 'Negative\n(Text Absent)']
+    tick_marks = np.arange(len(classes))
+    ax.set_xticks(tick_marks)
+    ax.set_yticks(tick_marks)
+    ax.set_xticklabels(classes, fontsize=11)
+    ax.set_yticklabels(classes, fontsize=11)
+    
+    # Add labels
+    ax.set_xlabel('Predicted', fontsize=14, fontweight='bold', labelpad=10)
+    ax.set_ylabel('Actual', fontsize=14, fontweight='bold', labelpad=10)
+    ax.set_title('OCR Confusion Matrix\nText Recognition Performance', 
+                 fontsize=16, fontweight='bold', pad=20)
+    
+    # Add text annotations
+    thresh = cm_data.max() / 2.
+    labels = [['TP\nTrue Positive', 'FN\nFalse Negative'],
+              ['FP\nFalse Positive', 'TN\nTrue Negative']]
+    
+    for i in range(2):
+        for j in range(2):
+            text_color = 'white' if cm_data[i, j] > thresh else 'black'
+            ax.text(j, i, f'{labels[i][j]}\n\n{cm_data[i, j]}',
+                   ha="center", va="center", color=text_color,
+                   fontsize=12, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close()
+    
+    print(f"✅ Confusion matrix visualization saved to {output_path}")
+
+# ============================================================================
+# MAIN TESTING FUNCTIONS
+# ============================================================================
+
+def test_ocr_with_actual_data():
+    """Test OCR with actual images"""
+    print_section_header("4.1.2 OCR TECHNOLOGY PERFORMANCE TESTING (ACTUAL DATA)")
+    
+    # Load ground truth
+    try:
+        ground_truth_df = pd.read_csv(GROUND_TRUTH_FILE)
+        print(f"📋 Loaded {len(ground_truth_df)} test cases from ground truth file")
+    except Exception as e:
+        print(f"❌ Failed to load ground truth file: {e}")
+        return None
+    
+    results = []
+    
+    print(f"\n🎯 Testing OCR on {len(ground_truth_df)} Philippine ID images...\n")
+    
+    for idx, row in ground_truth_df.iterrows():
+        filename = row['filename']
+        id_type = row['id_type']
+        condition = row['condition']
+        expected_name = row['expected_name']
+        
+        image_path = os.path.join(TEST_IMAGES_DIR, filename)
+        
+        if not os.path.exists(image_path):
+            print(f"Test {idx+1}: {filename} - ⚠️  Image not found, skipping")
+            continue
+        
+        print(f"Test {idx+1}/{len(ground_truth_df)}: {filename}")
+        print(f"  Type: {id_type}")
+        print(f"  Condition: {condition}")
+        print(f"  Expected: {expected_name}")
+        
+        # Run OCR
+        print(f"  Running OCR...", end=' ')
+        start_time = time.time()
+        ocr_result = run_ocr_on_image(image_path)
+        processing_time = time.time() - start_time
+        
+        # Parse results
+        if ocr_result.get('success'):
+            extracted_name = ocr_result.get('name', '')
+            
+            # Calculate accuracy
+            char_accuracy = calculate_character_accuracy(expected_name, extracted_name)
+            
+            # Classify result for confusion matrix
+            classification = classify_ocr_result(expected_name, extracted_name, char_accuracy)
+            
+            # Determine if extraction was successful
+            field_extracted = len(extracted_name.strip()) > 0
+            is_correct = char_accuracy >= 90
+            
+            # Print result
+            if is_correct:
+                print(f"✅ PASS ({char_accuracy:.1f}%)")
+            elif field_extracted:
+                print(f"⚠️  PARTIAL ({char_accuracy:.1f}%)")
+            else:
+                print(f"❌ FAIL (No extraction)")
+            
+            print(f"  Extracted: {extracted_name}")
+            print(f"  Character Accuracy: {char_accuracy:.2f}%")
+            print(f"  Classification: {classification}")
+            print(f"  Processing Time: {processing_time:.3f}s")
+            
+        else:
+            print("❌ OCR Failed")
+            extracted_name = ''
+            char_accuracy = 0.0
+            classification = 'FN'  # Failed to extract
+            field_extracted = False
+            is_correct = False
+            print(f"  Error: {ocr_result.get('error', 'Unknown error')}")
+        
+        print()
+        
+        # Store result
+        results.append({
+            'test_case': idx + 1,
+            'filename': filename,
+            'id_type': id_type,
+            'condition': condition,
+            'expected_name': expected_name,
+            'extracted_name': extracted_name,
+            'character_accuracy': char_accuracy,
+            'classification': classification,
+            'field_extracted': field_extracted,
+            'correct_extraction': is_correct,
+            'processing_time': processing_time,
+            'ocr_success': ocr_result.get('success', False)
+        })
+        
+        time.sleep(0.3)  # Brief pause between tests
+    
+    return results
+
+def analyze_results(results):
+    """Analyze OCR test results and calculate metrics"""
+    if not results:
+        print("❌ No results to analyze")
+        return None
+    
+    print_section_header("4.1.2.5 OCR TEST RESULTS ANALYSIS")
+    
+    results_df = pd.DataFrame(results)
+    
+    # Print confusion matrix computation
+    tp, fp, fn, tn, metrics = print_confusion_matrix_computation(results_df)
+    
+    # Calculate additional metrics
+    total_cases = len(results)
+    successful_ocr = results_df['ocr_success'].sum()
+    fields_extracted = results_df['field_extracted'].sum()
+    correct_extractions = results_df['correct_extraction'].sum()
+    
+    # Calculate rates
+    ocr_success_rate = (successful_ocr / total_cases * 100) if total_cases > 0 else 0
+    field_extraction_rate = (fields_extracted / total_cases * 100) if total_cases > 0 else 0
+    avg_char_accuracy = results_df['character_accuracy'].mean()
+    avg_processing_time = results_df['processing_time'].mean()
+    
+    # Print summary
+    print(f"\n{'='*80}")
+    print("📊 OVERALL PERFORMANCE SUMMARY")
+    print(f"{'='*80}")
+    print(f"Total Test Cases: {total_cases}")
+    print(f"Successful OCR Runs: {successful_ocr}/{total_cases} ({ocr_success_rate:.2f}%)")
+    print(f"\n🎯 KEY METRICS:")
+    print(f"  OCR Accuracy: {metrics['accuracy']:.2f}% (Target: ≥{TARGET_ACCURACY}%) {'✅ PASS' if metrics['accuracy'] >= TARGET_ACCURACY else '❌ FAIL'}")
+    print(f"  Character Recognition Rate (CRR): {avg_char_accuracy:.2f}% (Target: ≥{TARGET_CRR}%) {'✅ PASS' if avg_char_accuracy >= TARGET_CRR else '❌ FAIL'}")
+    print(f"  Field Extraction Success Rate (FESR): {field_extraction_rate:.2f}% (Target: ≥{TARGET_FESR}%) {'✅ PASS' if field_extraction_rate >= TARGET_FESR else '❌ FAIL'}")
+    print(f"  Precision: {metrics['precision']:.2f}%")
+    print(f"  Recall: {metrics['recall']:.2f}%")
+    print(f"  F1-Score: {metrics['f1_score']:.2f}%")
+    print(f"  Average Processing Time: {avg_processing_time:.3f}s")
+    
+    # Save results
+    results_df.to_csv(f"{OUTPUT_DIR}/ocr_test_results.csv", index=False)
+    print(f"\n✅ Results saved to {OUTPUT_DIR}/ocr_test_results.csv")
+    
+    # Performance by ID type
+    if 'id_type' in results_df.columns:
+        print(f"\n📋 PERFORMANCE BY ID TYPE:")
+        id_type_stats = results_df.groupby('id_type').agg({
+            'correct_extraction': 'sum',
+            'character_accuracy': 'mean',
+            'classification': lambda x: (x == 'TP').sum()
+        }).round(2)
+        id_type_stats['total_tests'] = results_df.groupby('id_type').size()
+        id_type_stats['accuracy_rate'] = (id_type_stats['classification'] / id_type_stats['total_tests'] * 100).round(2)
+        id_type_stats.columns = ['Correct', 'Avg Char Accuracy', 'True Positives', 'Total Tests', 'Accuracy Rate (%)']
+        
+        print(id_type_stats.to_string())
+        id_type_stats.to_csv(f"{OUTPUT_DIR}/performance_by_id_type.csv")
+    
+    # Performance by condition
+    if 'condition' in results_df.columns:
+        print(f"\n📋 PERFORMANCE BY TEST CONDITION:")
+        condition_stats = results_df.groupby('condition').agg({
+            'correct_extraction': 'sum',
+            'character_accuracy': 'mean',
+            'classification': lambda x: (x == 'TP').sum()
+        }).round(2)
+        condition_stats['total_tests'] = results_df.groupby('condition').size()
+        condition_stats['accuracy_rate'] = (condition_stats['classification'] / condition_stats['total_tests'] * 100).round(2)
+        condition_stats.columns = ['Correct', 'Avg Char Accuracy', 'True Positives', 'Total Tests', 'Accuracy Rate (%)']
+        
+        print(condition_stats.to_string())
+        condition_stats.to_csv(f"{OUTPUT_DIR}/performance_by_condition.csv")
+    
+    # Create confusion matrix visualization
+    create_confusion_matrix_visualization(tp, fp, fn, tn, f"{OUTPUT_DIR}/confusion_matrix.png")
+    
+    return {
+        'total_cases': total_cases,
+        'accuracy': metrics['accuracy'],
+        'precision': metrics['precision'],
+        'recall': metrics['recall'],
+        'f1_score': metrics['f1_score'],
+        'crr': avg_char_accuracy,
+        'fesr': field_extraction_rate,
+        'avg_processing_time': avg_processing_time,
+        'tp': tp,
+        'fp': fp,
+        'fn': fn,
+        'tn': tn
+    }
+
+def create_performance_visualizations(results_df, metrics):
+    """Create performance visualization charts"""
+    try:
+        plt.style.use('default')
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # 1. Performance Metrics vs Targets
+        metric_names = ['Accuracy', 'CRR', 'FESR']
+        actual_values = [metrics['accuracy'], metrics['crr'], metrics['fesr']]
+        target_values = [TARGET_ACCURACY, TARGET_CRR, TARGET_FESR]
+        
+        x = np.arange(len(metric_names))
+        width = 0.35
+        
+        bars1 = ax1.bar(x - width/2, actual_values, width, label='Actual', color='lightblue')
+        bars2 = ax1.bar(x + width/2, target_values, width, label='Target', color='lightcoral')
+        
+        ax1.set_ylabel('Percentage (%)')
+        ax1.set_title('OCR Performance vs Targets')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(metric_names)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Add value labels
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{height:.1f}%', ha='center', va='bottom')
+        
+        # 2. Performance by ID Type
+        if 'id_type' in results_df.columns and len(results_df['id_type'].unique()) > 1:
+            id_type_acc = results_df.groupby('id_type')['character_accuracy'].mean()
+            ax2.bar(range(len(id_type_acc)), id_type_acc.values, color='lightgreen')
+            ax2.axhline(y=TARGET_CRR, color='red', linestyle='--', label=f'Target ({TARGET_CRR}%)')
+            ax2.set_xlabel('ID Type')
+            ax2.set_ylabel('Character Accuracy (%)')
+            ax2.set_title('Performance by ID Type')
+            ax2.set_xticks(range(len(id_type_acc)))
+            ax2.set_xticklabels(id_type_acc.index, rotation=45, ha='right')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+        else:
+            ax2.text(0.5, 0.5, 'Insufficient ID Type Data', ha='center', va='center')
+            ax2.set_title('Performance by ID Type')
+        
+        # 3. Processing Time Distribution
+        ax3.hist(results_df['processing_time'], bins=10, color='lightyellow', edgecolor='black')
+        ax3.axvline(x=metrics['avg_processing_time'], color='red', linestyle='--', 
+                   label=f'Avg: {metrics["avg_processing_time"]:.3f}s')
+        ax3.set_xlabel('Processing Time (seconds)')
+        ax3.set_ylabel('Frequency')
+        ax3.set_title('OCR Processing Time Distribution')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. Confusion Matrix Results Distribution
+        labels = ['TP', 'FP', 'FN', 'TN']
+        sizes = [metrics['tp'], metrics['fp'], metrics['fn'], metrics['tn']]
+        colors = ['#4DB6AC', '#FFB74D', '#E57373', '#81C784']
+        
+        ax4.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+        ax4.set_title('Confusion Matrix Distribution')
+        
+        plt.tight_layout()
+        plt.savefig(f"{OUTPUT_DIR}/performance_visualization.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"\n✅ Performance visualization saved to {OUTPUT_DIR}/performance_visualization.png")
+        
+    except Exception as e:
+        print(f"\n⚠️  Visualization generation failed: {e}")
+
+def generate_final_report(metrics):
+    """Generate final comprehensive report"""
+    print_section_header("FINAL OCR TEST REPORT")
+    
+    # Determine pass/fail
+    passed_metrics = 0
+    total_metrics = 3
+    
+    if metrics['accuracy'] >= TARGET_ACCURACY:
+        passed_metrics += 1
+    if metrics['crr'] >= TARGET_CRR:
+        passed_metrics += 1
+    if metrics['fesr'] >= TARGET_FESR:
+        passed_metrics += 1
+    
+    overall_pass_rate = (passed_metrics / total_metrics * 100)
+    overall_status = 'PASS' if passed_metrics >= 2 else 'FAIL'  # 2/3 metrics must pass
+    
+    # Create report
+    report = {
+        'test_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'test_type': 'Actual Data Testing with Confusion Matrix',
+        'sample_size': metrics['total_cases'],
+        'confusion_matrix': {
+            'true_positives': int(metrics['tp']),
+            'false_positives': int(metrics['fp']),
+            'false_negatives': int(metrics['fn']),
+            'true_negatives': int(metrics['tn'])
+        },
+        'metrics': {
+            'accuracy': float(metrics['accuracy']),
+            'precision': float(metrics['precision']),
+            'recall': float(metrics['recall']),
+            'f1_score': float(metrics['f1_score']),
+            'character_recognition_rate': float(metrics['crr']),
+            'field_extraction_success_rate': float(metrics['fesr']),
+            'avg_processing_time': float(metrics['avg_processing_time'])
+        },
+        'targets': {
+            'accuracy': TARGET_ACCURACY,
+            'crr': TARGET_CRR,
+            'fesr': TARGET_FESR
+        },
+        'overall_performance': {
+            'passed_metrics': passed_metrics,
+            'total_metrics': total_metrics,
+            'pass_rate': overall_pass_rate,
+            'status': overall_status
+        }
+    }
+    
+    # Save report
+    with open(f"{OUTPUT_DIR}/final_report.json", 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    print(f"Test Date: {report['test_date']}")
+    print(f"Test Type: {report['test_type']}")
+    print(f"Sample Size: {report['sample_size']}")
+    print(f"\n🎯 CONFUSION MATRIX:")
+    print(f"  TP: {report['confusion_matrix']['true_positives']}")
+    print(f"  FP: {report['confusion_matrix']['false_positives']}")
+    print(f"  FN: {report['confusion_matrix']['false_negatives']}")
+    print(f"  TN: {report['confusion_matrix']['true_negatives']}")
+    print(f"\n🎯 OVERALL RESULTS:")
+    print(f"  Metrics Passed: {passed_metrics}/{total_metrics}")
+    print(f"  Overall Pass Rate: {overall_pass_rate:.2f}%")
+    print(f"  System Status: {overall_status}")
+    print(f"\n📁 Report saved to {OUTPUT_DIR}/final_report.json")
+    
+    return report
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Main execution function"""
+    print("\n" + "="*80)
+    print("CLICARE OCR TECHNOLOGY - ACTUAL DATA TESTING")
+    print("WITH CONFUSION MATRIX ANALYSIS")
+    print("="*80)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Create output directory
+    create_output_directory()
+    
+    # Check prerequisites
+    if not check_prerequisites():
+        print("\n❌ Prerequisites check failed. Please resolve issues above.")
+        print("\n💡 Next steps:")
+        print("   1. Add test images to ./test_images/")
+        print("   2. Create/edit test_images_ground_truth.csv with expected results")
+        print("   3. Ensure at least 50 samples as per research requirements")
+        return
+    
+    print("\n🚀 Starting actual data OCR testing with confusion matrix analysis...")
+    input("Press ENTER to continue (or Ctrl+C to cancel)...")
+    
+    try:
+        # Run OCR tests
+        results = test_ocr_with_actual_data()
+        
+        if not results:
+            print("\n❌ No test results obtained")
+            return
+        
+        # Analyze results
+        metrics = analyze_results(results)
+        
+        if not metrics:
+            print("\n❌ Analysis failed")
+            return
+        
+        # Create visualizations
+        results_df = pd.DataFrame(results)
+        create_performance_visualizations(results_df, metrics)
+        
+        # Generate final report
+        final_report = generate_final_report(metrics)
+        
+        # Print summary
+        print("\n" + "="*80)
+        print("✅ OCR ACTUAL DATA TESTING COMPLETED")
+        print("="*80)
+        print(f"\n📊 Summary:")
+        print(f"  Total Tests: {metrics['total_cases']}")
+        print(f"  Accuracy: {metrics['accuracy']:.2f}% (Target: ≥{TARGET_ACCURACY}%)")
+        print(f"  CRR: {metrics['crr']:.2f}% (Target: ≥{TARGET_CRR}%)")
+        print(f"  FESR: {metrics['fesr']:.2f}% (Target: ≥{TARGET_FESR}%)")
+        print(f"  System Status: {final_report['overall_performance']['status']}")
+        
+        print(f"\n📁 All results saved to: {OUTPUT_DIR}/")
+        print(f"  • Test results: ocr_test_results.csv")
+        print(f"  • Confusion matrix: confusion_matrix.png")
+        print(f"  • Performance charts: performance_visualization.png")
+        print(f"  • Final report: final_report.json")
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Testing interrupted by user")
+    except Exception as e:
+        print(f"\n\n❌ Error during testing: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
