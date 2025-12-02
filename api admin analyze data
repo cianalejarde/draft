@@ -1,0 +1,287 @@
+app.post('/api/admin/analyze-data', authenticateToken, async (req, res) => {
+try {
+  if (req.user.type !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const { query } = req.body;
+  const today = new Date().toISOString().split('T')[0];
+  const oneWeekAgo = new Date();
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+  const weekAgoStr = oneWeekAgo.toISOString().split('T')[0];
+  
+  console.log('📊 Fetching optimized hospital data...');
+  const startTime = Date.now();
+  
+  // ============================================================================
+  // ✅ DECLARE OUTSIDE TRY BLOCK
+  // ============================================================================
+  let contextData = {
+    core: {
+      totalPatients: 0,
+      todayVisits: 0,
+      newThisWeek: 0,
+      appointments: 0,
+      activeDoctors: 0,
+      checkedIn: 0,
+      completed: 0
+    },
+    departments: {},
+    queue: { waiting: 0, inProgress: 0, completed: 0 },
+    symptoms: [],
+    avgWaitTime: 0
+  };
+  
+  // ============================================================================
+  // ✅ OPTIMIZED: Single Promise.all instead of sequential queries
+  // ============================================================================
+  try {
+    const [
+      { count: totalPatients },
+      { count: todayVisits },
+      { count: newThisWeek },
+      { count: todayAppointments },
+      { count: activeDoctors },
+      { data: queueData },
+      { data: symptomData },
+      { data: visitData }
+    ] = await Promise.all([
+      supabase.from('outpatient').select('*', { count: 'exact', head: true }),
+      supabase.from('visit').select('*', { count: 'exact', head: true }).eq('visit_date', today),
+      supabase.from('outpatient').select('*', { count: 'exact', head: true }).gte('registration_date', weekAgoStr),
+      supabase.from('pre_registration').select('*', { count: 'exact', head: true }).eq('scheduled_date', today).in('status', ['pending', 'completed']),
+      supabase.from('staff').select('*', { count: 'exact', head: true }).eq('role', 'Doctor').eq('is_online', true),
+      supabase.from('queue').select('queue_id, status, department:department_id(name), created_time, updated_at').eq('scheduled_date', today),
+      supabase.from('visit').select('symptoms').eq('visit_date', today).not('symptoms', 'is', null).limit(50),
+      supabase.from('visit').select('symptoms, queue(department:department_id(name))').eq('visit_date', today).not('symptoms', 'is', null).limit(100)
+    ]);
+    
+    console.log(`✅ All data fetched in ${Date.now() - startTime}ms`);
+    
+    // ============================================================================
+    // ✅ SIMPLIFIED DATA PROCESSING
+    // ============================================================================
+    
+    // Process department data
+    const deptSummary = {};
+    const queueSummary = { waiting: 0, inProgress: 0, completed: 0 };
+    const waitTimes = [];
+    
+    (queueData || []).forEach(q => {
+      const dept = q.department?.name || 'Unknown';
+      deptSummary[dept] = (deptSummary[dept] || 0) + 1;
+      
+      if (q.status === 'waiting') queueSummary.waiting++;
+      else if (q.status === 'in_progress') queueSummary.inProgress++;
+      else if (q.status === 'completed') queueSummary.completed++;
+      
+      // Calculate wait time
+      if (q.created_time) {
+        const created = new Date(q.created_time);
+        const updated = q.updated_at ? new Date(q.updated_at) : new Date();
+        const waitMinutes = Math.floor((updated - created) / 60000);
+        if (waitMinutes >= 0) waitTimes.push(waitMinutes);
+      }
+    });
+    
+    // Process symptoms (simplified)
+    const symptomCounts = {};
+    (symptomData || []).forEach(v => {
+      if (v.symptoms) {
+        v.symptoms.split(',').forEach(symptom => {
+          const clean = symptom.trim();
+          if (clean && !clean.toLowerCase().includes('lab') && !clean.toLowerCase().includes('test') && clean.length > 2) {
+            symptomCounts[clean] = (symptomCounts[clean] || 0) + 1;
+          }
+        });
+      }
+    });
+    
+    const topSymptoms = Object.entries(symptomCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    const deptSymptoms = {};
+    (visitData || []).forEach(v => {
+      if (!v.symptoms) return;
+      
+      let deptName = null;
+      
+      if (Array.isArray(v.queue)) {
+        if (v.queue.length > 0 && v.queue[0]?.department?.name) {
+          deptName = v.queue[0].department.name;
+        }
+      } else if (v.queue?.department?.name) {
+        deptName = v.queue.department.name;
+      }
+    
+      if (!deptName) return;
+      
+      if (!deptSymptoms[deptName]) deptSymptoms[deptName] = {};
+      
+      v.symptoms.split(',').forEach(symptom => {
+        const clean = symptom.trim();
+        if (clean && !clean.toLowerCase().includes('lab') && !clean.toLowerCase().includes('test') && clean.length > 2) {
+          deptSymptoms[deptName][clean] = (deptSymptoms[deptName] || 0) + 1;
+        }
+      });
+    });
+            
+    // ============================================================================
+    // ✅ UPDATE CONTEXT DATA
+    // ============================================================================
+    contextData = {
+      core: {
+        totalPatients: totalPatients || 0,
+        todayVisits: todayVisits || 0,
+        newThisWeek: newThisWeek || 0,
+        appointments: todayAppointments || 0,
+        activeDoctors: activeDoctors || 0,
+        checkedIn: queueSummary.waiting + queueSummary.inProgress,
+        completed: queueSummary.completed
+      },
+      departments: deptSummary,
+      queue: queueSummary,
+      symptoms: topSymptoms,
+      departmentSymptoms: deptSymptoms,
+      avgWaitTime: waitTimes.length > 0 ? Math.round(waitTimes.reduce((a, b) => a + b, 0) / waitTimes.length) : 0
+    };
+    
+  } catch (error) {
+    console.error('❌ Database error:', error);
+    return res.status(500).json({ error: 'Database query failed' });
+  }
+  
+  // ============================================================================
+  // ✅ PRE-CHECK FOR PII REQUESTS
+  // ============================================================================
+  const lowerQuery = query.toLowerCase();
+  const piiKeywords = [
+    'patient id', 'patient name', 'patient contact', 'phone number', 
+    'email address', 'list of patients', 'who are the patients',
+    'patient details', 'contact info', 'personal information',
+    'give me the', 'show me the', 'list all'
+  ];
+
+  const isPIIRequest = piiKeywords.some(keyword => lowerQuery.includes(keyword));
+
+  if (isPIIRequest) {
+    console.log('🚫 PII request detected, blocking');
+    return res.json({
+      textResponse: "I can't provide individual patient information due to RA 10173. Instead, I can help you with: aggregate statistics, department summaries, symptom trends, or wait times. What would you like to know?",
+      chartType: null,
+      chartData: [],
+      chartTitle: null
+    });
+  }
+  
+  // ============================================================================
+  // ✅ OPTIMIZED GEMINI PROMPT - MUCH SHORTER
+  // ============================================================================
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+
+  const context = `Hospital admin assistant. Today: ${today}
+
+DATA:
+- Total Patients: ${contextData.core.totalPatients}
+- Today's Visits: ${contextData.core.todayVisits}  
+- Checked In: ${contextData.core.checkedIn}
+- Active Doctors: ${contextData.core.activeDoctors}
+- Departments: ${JSON.stringify(contextData.departments)}
+- Top Symptoms: ${JSON.stringify(contextData.symptoms)}
+- Department Symptoms: ${JSON.stringify(contextData.departmentSymptoms)}
+- Avg Wait: ${contextData.avgWaitTime} min
+
+QUESTION: "${query}"
+
+RULES:
+1. Be friendly, conversational - you're helping a hospital admin
+2. For symptom questions: provide both current data
+3. Share aggregate statistics freely, never individual patient data
+4. Always include chart (bar/pie/line)
+5. **CRITICAL: If asked for individual patient data (names, IDs, contact info):**
+- Respond ONLY: "I can't provide individual patient information due to RA 10173."
+- Then suggest: "Instead, I can help you with: aggregate statistics, department summaries, symptom trends, or wait times. What would you like to know?"
+- DO NOT provide any other hospital data
+- DO NOT show charts
+- Stop immediately after the suggestion
+
+RESPOND JSON ONLY:
+{
+"textResponse": "helpful response with data + medical insights",
+"chartType": "bar|pie|line",
+"chartData": [{"name": "X", "value": Y}],
+"chartTitle": "title"
+}`;
+
+  const geminiStart = Date.now();
+  const result = await model.generateContent(context);
+  console.log(`✅ Gemini responded in ${Date.now() - geminiStart}ms`);
+  
+  const response = await result.response;
+  let text = response.text().replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  
+  let parsedResponse;
+  try {
+    parsedResponse = JSON.parse(text);
+  } catch (parseError) {
+    console.error('❌ Parse error:', parseError);
+    return res.json({
+      textResponse: `Here's your hospital overview: ${contextData.core.todayVisits} visits today, ${contextData.core.totalPatients} total patients.`,
+      chartType: "bar",
+      chartData: [
+        {"name": "Today's Visits", "value": contextData.core.todayVisits},
+        {"name": "Total Patients", "value": contextData.core.totalPatients},
+        {"name": "Checked In", "value": contextData.core.checkedIn}
+      ],
+      chartTitle: "Hospital Overview"
+    });
+  }
+
+  // ============================================================================
+  // ✅ QUICK PII CHECK
+  // ============================================================================
+  const responseText = parsedResponse.textResponse || '';
+  if (/\bPAT\d{9}\b|\b09\d{9}\b|@[a-z]+\.[a-z]+/i.test(responseText)) {
+    return res.json({
+      textResponse: "I can't provide individual patient information due to RA 10173. Instead, I can help you with: aggregate statistics, department summaries, symptom trends, or wait times. What would you like to know?",
+      chartType: null,
+      chartData: [],
+      chartTitle: null
+    });
+  }
+
+  // ============================================================================
+  // ✅ ENSURE CHART EXISTS (WITH PRIVACY CHECK)
+  // ============================================================================
+  const isPrivacyResponse = responseText.includes('RA 10173') || 
+                            responseText.includes('individual patient information') ||
+                            responseText.includes("can't provide individual");
+
+  if (isPrivacyResponse) {
+    parsedResponse.chartType = null;
+    parsedResponse.chartData = [];
+    parsedResponse.chartTitle = null;
+  } else if (!parsedResponse.chartData || parsedResponse.chartData.length === 0) {
+    parsedResponse.chartType = 'bar';
+    parsedResponse.chartData = [
+      {"name": "Today's Visits", "value": contextData.core.todayVisits},
+      {"name": "Total Patients", "value": contextData.core.totalPatients},
+      {"name": "Checked In", "value": contextData.core.checkedIn}
+    ];
+    parsedResponse.chartTitle = "Hospital Overview";
+  }
+
+  console.log(`✅ Total request time: ${Date.now() - startTime}ms`);
+  return res.json(parsedResponse);
+
+} catch (error) {
+  console.error('❌ API Error:', error);
+  res.status(500).json({ 
+    textResponse: "System error occurred. Please try again.",
+    chartType: "bar",
+    chartData: [{"name": "System Status", "value": 0}],
+    chartTitle: "Error Status"
+  });
+}
+});
