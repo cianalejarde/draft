@@ -346,11 +346,11 @@ app.post('/api/admin/analyze-data', authenticateToken, async (req, res) => {
       console.log('🚫 PII request detected, blocking');
       return res.json({
         textResponse: "I can't provide individual patient information due to RA 10173 (Data Privacy Act). Instead, I can help you with:\n\n" +
-          "✅ Aggregate statistics (total patients, visit counts)\n" +
-          "✅ Department comparisons and performance\n" +
-          "✅ Symptom trends and patterns\n" +
-          "✅ Queue analytics and wait times\n" +
-          "✅ Peak hours and busiest days\n\n" +
+          "Aggregate statistics (total patients, visit counts)\n" +
+          "Department comparisons and performance\n" +
+          "Symptom trends and patterns\n" +
+          "Queue analytics and wait times\n" +
+          "Peak hours and busiest days\n\n" +
           "What statistical insights would you like to see?",
         chartType: null,
         chartData: [],
