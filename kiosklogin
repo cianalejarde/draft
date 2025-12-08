@@ -1,79 +1,23 @@
-const initializePatientData = async () => {
-    try {
-      const token = localStorage.getItem('patientToken');
-      const patientId = localStorage.getItem('patientId');
-      const patientName = localStorage.getItem('patientName');
-      const storedPatientInfo = localStorage.getItem('patientInfo');
-      const emergencyContact = localStorage.getItem('emergencyContact');
-      
-      if (!token || !patientId) {
-        window.location.href = '/web-login';
-        return;
-      }
-      
-      let fullPatientInfo = {};
-      let emergencyContactInfo = {};
-      
-      try {
-        if (storedPatientInfo) {
-          fullPatientInfo = JSON.parse(storedPatientInfo);
-        }
-        if (emergencyContact) {
-          emergencyContactInfo = JSON.parse(emergencyContact);
-        }
-      } catch (error) {
-        console.warn('Failed to parse stored patient info:', error);
-      }
-      
-      setPatientInfo({
-        patientId: fullPatientInfo.patient_id || patientId,
-        name: fullPatientInfo.name || patientName,
-        email: fullPatientInfo.email || '',
-        contactNumber: fullPatientInfo.contact_no || '',
-        birthday: fullPatientInfo.birthday || '',
-        age: fullPatientInfo.age || '',
-        sex: fullPatientInfo.sex || '',
-        address: fullPatientInfo.address || '',
-        registrationDate: fullPatientInfo.registration_date || '',
-        emergencyContactName: emergencyContactInfo.name || fullPatientInfo.emergency_contact_name || '',
-        emergencyContactRelationship: emergencyContactInfo.relationship || fullPatientInfo.emergency_contact_relationship || '',
-        emergencyContactNo: emergencyContactInfo.contact_no || fullPatientInfo.emergency_contact_no || '',
-        allergies: '',
-        medications: '',
-        previous_treatment: ''
-      });
-
-      // ✅ FIX: Fetch medical information from your backend API
-      try {
-        const response = await fetch(`http://localhost:5000/api/patient/medical-info/${patientId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          credentials: 'include'
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data.medicalInfo) {
-            setPatientInfo(prev => ({
-              ...prev,
-              allergies: data.medicalInfo.allergies || '',
-              medications: data.medicalInfo.medications || '',
-              previous_treatment: data.medicalInfo.previous_treatment || ''
-            }));
-          }
-        }
-      } catch (error) {
-        console.warn('Could not fetch medical information:', error);
-      }
-
-      await loadDashboardData();
-      
-    } catch (error) {
-      console.error('Error initializing patient data:', error);
-      setError('Failed to load patient data');
-      setLoading(false);
-    }
-  };
+ <div className="webmain-profile-section">
+                    <h3 className="webmain-profile-section-title">Medical Information</h3>
+                    <div className="webmain-profile-info-grid">
+                      <div className="webmain-profile-info-item">
+                        <label className="webmain-profile-info-label">Known Allergies</label>
+                        <span className="webmain-profile-info-value">
+                          {patientInfo.allergies || 'None recorded'}
+                        </span>
+                      </div>
+                      <div className="webmain-profile-info-item">
+                        <label className="webmain-profile-info-label">Current Medication</label>
+                        <span className="webmain-profile-info-value">
+                          {patientInfo.medications || 'None recorded'}
+                        </span>
+                      </div>
+                      <div className="webmain-profile-info-item">
+                        <label className="webmain-profile-info-label">Previous Treatment</label>
+                        <span className="webmain-profile-info-value">
+                          {patientInfo.previous_treatment || 'None recorded'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
