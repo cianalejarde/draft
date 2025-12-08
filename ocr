@@ -1,0 +1,514 @@
+/**
+ * PhilSys Name Extraction - IMPROVED VERSION
+ * Format: Stacked vertically - Apelyido/Last Name, Mga Pangalan/Given Names, Gitnang Apelyido/Middle Name
+ */
+const extractPhilsysName = (lines) => {
+  console.log('📋 PhilSys ID detected');
+  console.log('📄 All Lines:', lines);
+  
+  let lastName = null;
+  let givenNames = null;
+  let middleName = null;
+  
+  // Strategy 1: Look for labeled sections
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
+    const nextNextLine = i + 2 < lines.length ? lines[i + 2] : '';
+    
+    // Skip header lines
+    if (line.includes('PHILSYS') || 
+        line.includes('PHILIPPINE') ||
+        line.includes('IDENTIFICATION') ||
+        line.includes('SYSTEM') ||
+        line.includes('REPUBLIKA') ||
+        line.includes('PAMBANSANG') ||
+        line.includes('PAGKAKAKILANLAN') ||
+        line.includes('REPUBLIC') ||
+        /^\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}$/.test(line.replace(/\s/g, ''))) {
+      continue;
+    }
+    
+    // Look for Last Name label variations (APELYIDO / LAST NAME)
+    if (line.includes('APELYIDO') || line.includes('APELLYIDO') || 
+        (line.includes('LAST') && line.includes('NAME'))) {
+      
+      // Check if value is on the same line (after the label)
+      const afterLabel = line
+        .replace(/APELYIDO|APELLYIDO|LAST\s*NAME|MGA|[\/\|\:]/gi, '')
+        .trim();
+      
+      if (afterLabel.length >= 2 && /^[A-Z][A-Z\s\-']+$/.test(afterLabel)) {
+        lastName = afterLabel;
+        console.log('✅ Found Last Name (same line):', lastName);
+      } else if (nextLine && nextLine.length >= 2) {
+        // Check next line - should be just a name, not a label
+        const cleanNext = nextLine.replace(/[\/\|\:]/g, '').trim();
+        if (!cleanNext.includes('PANGALAN') && 
+            !cleanNext.includes('GIVEN') &&
+            !cleanNext.includes('APELYIDO') &&
+            /^[A-Z][A-Z\s\-']+$/.test(cleanNext) &&
+            cleanNext.length <= 30) {
+          lastName = cleanNext;
+          console.log('✅ Found Last Name (next line):', lastName);
+        }
+      }
+    }
+    
+    // Look for Given Names label variations (MGA PANGALAN / GIVEN NAMES)
+    if ((line.includes('PANGALAN') && !line.includes('GITNANG')) || 
+        (line.includes('GIVEN') && line.includes('NAME'))) {
+      
+      // Check if value is on the same line
+      const afterLabel = line
+        .replace(/MGA\s*PANGALAN|PANGALAN|GIVEN\s*NAMES?|[\/\|\:]/gi, '')
+        .trim();
+      
+      if (afterLabel.length >= 2 && /^[A-Z][A-Z\s\-']+$/.test(afterLabel)) {
+        givenNames = afterLabel;
+        console.log('✅ Found Given Names (same line):', givenNames);
+      } else if (nextLine && nextLine.length >= 2) {
+        const cleanNext = nextLine.replace(/[\/\|\:]/g, '').trim();
+        if (!cleanNext.includes('GITNANG') && 
+            !cleanNext.includes('MIDDLE') &&
+            !cleanNext.includes('APELYIDO') &&
+            /^[A-Z][A-Z\s\-']+$/.test(cleanNext) &&
+            cleanNext.length <= 40) {
+          givenNames = cleanNext;
+          console.log('✅ Found Given Names (next line):', givenNames);
+        }
+      }
+    }
+    
+    // Look for Middle Name label variations (GITNANG APELYIDO / MIDDLE NAME)
+    if ((line.includes('GITNANG') && (line.includes('APELYIDO') || line.includes('APELLYIDO'))) || 
+        (line.includes('MIDDLE') && line.includes('NAME'))) {
+      
+      // Check if value is on the same line
+      const afterLabel = line
+        .replace(/GITNANG\s*APELYIDO|GITNANG\s*APELLYIDO|MIDDLE\s*NAME|[\/\|\:]/gi, '')
+        .trim();
+      
+      if (afterLabel.length >= 2 && /^[A-Z][A-Z\s\-']+$/.test(afterLabel)) {
+        middleName = afterLabel;
+        console.log('✅ Found Middle Name (same line):', middleName);
+      } else if (nextLine && nextLine.length >= 2) {
+        const cleanNext = nextLine.replace(/[\/\|\:]/g, '').trim();
+        if (!cleanNext.includes('PETSA') && 
+            !cleanNext.includes('DATE') &&
+            !cleanNext.includes('BIRTH') &&
+            !cleanNext.includes('KAPANGANAKAN') &&
+            /^[A-Z][A-Z\s\-']+$/.test(cleanNext) &&
+            cleanNext.length <= 30) {
+          middleName = cleanNext;
+          console.log('✅ Found Middle Name (next line):', middleName);
+        }
+      }
+    }
+  }
+  
+  // Construct full name: Given Names + Middle Name + Last Name
+  if (givenNames && lastName) {
+    let fullName = givenNames;
+    if (middleName) {
+      fullName += ' ' + middleName;
+    }
+    fullName += ' ' + lastName;
+    console.log('✅ Constructed Full Name:', fullName);
+    return fullName;
+  }
+  
+  // Strategy 2: Pattern-based extraction for OCR variations
+  // Look for consecutive name-like lines (PhilSys has stacked names)
+  let nameCandidates = [];
+  let skipUntilIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    if (i <= skipUntilIndex) continue;
+    
+    const line = lines[i];
+    
+    // Skip obvious non-name lines
+    if (line.includes('PHILSYS') || 
+        line.includes('PHILIPPINE') ||
+        line.includes('REPUBLIKA') ||
+        line.includes('REPUBLIC') ||
+        line.includes('PAMBANSANG') ||
+        line.includes('IDENTIFICATION') ||
+        line.includes('PETSA') ||
+        line.includes('DATE') ||
+        line.includes('BIRTH') ||
+        line.includes('KAPANGANAKAN') ||
+        line.includes('TIRAHAN') ||
+        line.includes('ADDRESS') ||
+        line.includes('APELYIDO') ||
+        line.includes('APELLYIDO') ||
+        line.includes('PANGALAN') ||
+        line.includes('GITNANG') ||
+        line.includes('LAST NAME') ||
+        line.includes('GIVEN') ||
+        line.includes('MIDDLE') ||
+        line.includes('/') ||
+        /^\d{4}[-\s]?\d{4}[-\s]?\d{4}/.test(line) ||
+        /[A-Z]+\s+\d{1,2},?\s+\d{4}/.test(line) ||
+        line.length < 2 ||
+        line.length > 35) {
+      continue;
+    }
+    
+    // Check if line looks like a name (letters only, with optional hyphen/apostrophe)
+    const cleanLine = line.replace(/[\/\|\:\-\']/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/^[A-Z][A-Z\s]+$/.test(cleanLine) && 
+        cleanLine.split(/\s+/).length <= 4 &&
+        cleanLine.length >= 2) {
+      nameCandidates.push({
+        line: cleanLine,
+        index: i
+      });
+    }
+  }
+  
+  console.log('📝 Name candidates:', nameCandidates);
+  
+  // If we have 2-3 consecutive name candidates, treat as: Last, Given, Middle
+  if (nameCandidates.length >= 2) {
+    for (let i = 0; i < nameCandidates.length - 1; i++) {
+      const current = nameCandidates[i];
+      const next = nameCandidates[i + 1];
+      
+      // If candidates are close together (within 3 lines), treat as name parts
+      if (next.index - current.index <= 3) {
+        // PhilSys order: Last Name, Given Names, [Middle Name]
+        lastName = current.line;
+        givenNames = next.line;
+        
+        // Check for middle name
+        if (i + 2 < nameCandidates.length) {
+          const third = nameCandidates[i + 2];
+          if (third.index - next.index <= 3) {
+            middleName = third.line;
+          }
+        }
+        
+        if (givenNames && lastName) {
+          let fullName = givenNames;
+          if (middleName) {
+            fullName += ' ' + middleName;
+          }
+          fullName += ' ' + lastName;
+          console.log('✅ Constructed Full Name (from candidates):', fullName);
+          return fullName;
+        }
+      }
+    }
+  }
+  
+  // Strategy 3: Fallback - comma-separated format
+  const nameWithCommaPattern = /^([A-Z][A-Z\s\-']+),\s*([A-Z][A-Z\s\-']+)$/;
+  
+  for (let line of lines) {
+    if (line.includes('PHILSYS') || 
+        line.includes('PHILIPPINE') ||
+        line.includes('IDENTIFICATION') ||
+        /^\d{4}[-\s]?\d{4}/.test(line)) {
+      continue;
+    }
+    
+    const match = line.match(nameWithCommaPattern);
+    if (match) {
+      const part1 = match[1].trim();
+      const part2 = match[2].trim();
+      
+      if (part1.length >= 2 && part2.length >= 2) {
+        // Assume: SURNAME, GIVEN MIDDLE
+        const fullName = `${part2} ${part1}`;
+        console.log('✅ Extracted Full Name (comma format):', fullName);
+        return fullName;
+      }
+    }
+  }
+  
+  console.log('❌ No valid PhilSys name found');
+  return null;
+};
+
+/**
+ * PhilSys Birthday Extraction - IMPROVED VERSION
+ * Format: "Petsa ng Kapanganakan / Date of Birth" followed by "APRIL 15, 1978"
+ */
+const extractPhilsysBirthday = (lines) => {
+  console.log('📅 Extracting PhilSys Birthday');
+  
+  const monthNames = {
+    'JANUARY': '01', 'FEBRUARY': '02', 'MARCH': '03', 'APRIL': '04',
+    'MAY': '05', 'JUNE': '06', 'JULY': '07', 'AUGUST': '08',
+    'SEPTEMBER': '09', 'OCTOBER': '10', 'NOVEMBER': '11', 'DECEMBER': '12'
+  };
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
+    const nextNextLine = i + 2 < lines.length ? lines[i + 2] : '';
+    
+    // Look for date of birth label
+    const isDateLabel = 
+      (line.includes('PETSA') && (line.includes('KAPANGANAKAN') || line.includes('BIRTH'))) ||
+      (line.includes('DATE') && line.includes('BIRTH')) ||
+      line.includes('KAPANGANAKAN');
+    
+    if (isDateLabel) {
+      // Check current line for date value after the label
+      for (const [monthName, monthNum] of Object.entries(monthNames)) {
+        const pattern = new RegExp(`${monthName}\\s+(\\d{1,2}),?\\s+(\\d{4})`, 'i');
+        const match = line.match(pattern);
+        if (match) {
+          const day = match[1].padStart(2, '0');
+          const year = match[2];
+          const formattedDate = `${year}-${monthNum}-${day}`;
+          console.log('✅ Found Birthday (same line):', formattedDate);
+          return formattedDate;
+        }
+      }
+      
+      // Check next line
+      if (nextLine) {
+        for (const [monthName, monthNum] of Object.entries(monthNames)) {
+          const pattern = new RegExp(`${monthName}\\s+(\\d{1,2}),?\\s+(\\d{4})`, 'i');
+          const match = nextLine.match(pattern);
+          if (match) {
+            const day = match[1].padStart(2, '0');
+            const year = match[2];
+            const formattedDate = `${year}-${monthNum}-${day}`;
+            console.log('✅ Found Birthday (next line):', formattedDate);
+            return formattedDate;
+          }
+        }
+        
+        // Numeric format: YYYY-MM-DD or MM/DD/YYYY or DD/MM/YYYY
+        const numericPattern1 = /(\d{4})[-\/](\d{2})[-\/](\d{2})/;
+        const numericPattern2 = /(\d{2})[-\/](\d{2})[-\/](\d{4})/;
+        
+        let numMatch = nextLine.match(numericPattern1);
+        if (numMatch) {
+          console.log('✅ Found Birthday (YYYY-MM-DD):', `${numMatch[1]}-${numMatch[2]}-${numMatch[3]}`);
+          return `${numMatch[1]}-${numMatch[2]}-${numMatch[3]}`;
+        }
+        
+        numMatch = nextLine.match(numericPattern2);
+        if (numMatch) {
+          // Assume MM/DD/YYYY for Philippines
+          console.log('✅ Found Birthday (MM/DD/YYYY):', `${numMatch[3]}-${numMatch[1]}-${numMatch[2]}`);
+          return `${numMatch[3]}-${numMatch[1]}-${numMatch[2]}`;
+        }
+      }
+      
+      // Check next next line (sometimes there's spacing)
+      if (nextNextLine) {
+        for (const [monthName, monthNum] of Object.entries(monthNames)) {
+          const pattern = new RegExp(`${monthName}\\s+(\\d{1,2}),?\\s+(\\d{4})`, 'i');
+          const match = nextNextLine.match(pattern);
+          if (match) {
+            const day = match[1].padStart(2, '0');
+            const year = match[2];
+            const formattedDate = `${year}-${monthNum}-${day}`;
+            console.log('✅ Found Birthday (next next line):', formattedDate);
+            return formattedDate;
+          }
+        }
+      }
+    }
+  }
+  
+  // Direct search for date pattern anywhere (fallback)
+  for (let line of lines) {
+    // Skip non-birthday contexts
+    if (line.includes('VALID') || line.includes('EXPIR') || 
+        line.includes('TIRAHAN') || line.includes('ADDRESS')) {
+      continue;
+    }
+    
+    for (const [monthName, monthNum] of Object.entries(monthNames)) {
+      const pattern = new RegExp(`${monthName}\\s+(\\d{1,2}),?\\s+(\\d{4})`, 'i');
+      const match = line.match(pattern);
+      if (match) {
+        const day = match[1].padStart(2, '0');
+        const year = match[2];
+        
+        // Validate year is reasonable for a birthday (1900-2023)
+        const yearInt = parseInt(year);
+        if (yearInt >= 1900 && yearInt <= new Date().getFullYear()) {
+          const formattedDate = `${year}-${monthNum}-${day}`;
+          console.log('✅ Found Birthday (direct search):', formattedDate);
+          return formattedDate;
+        }
+      }
+    }
+  }
+  
+  console.log('❌ No PhilSys birthday found');
+  return null;
+};
+
+/**
+ * PhilSys Address Extraction - IMPROVED VERSION
+ * Format: "Tirahan / Address" followed by Street, Barangay, City (may span multiple lines)
+ */
+const extractPhilsysAddress = (lines) => {
+  console.log('🏠 Extracting PhilSys Address');
+  
+  let addressParts = [];
+  let foundAddressLabel = false;
+  let addressStartIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Look for address label
+    const isAddressLabel = 
+      (line.includes('TIRAHAN') && line.includes('ADDRESS')) ||
+      line.includes('TIRAHAN/ADDRESS') ||
+      line === 'TIRAHAN' || 
+      (line === 'ADDRESS' && !line.includes('PERMANENT'));
+    
+    if (isAddressLabel) {
+      foundAddressLabel = true;
+      addressStartIndex = i;
+      
+      // Check if address starts on the same line
+      const afterLabel = line
+        .replace(/TIRAHAN|ADDRESS|[\/\|\:]/gi, '')
+        .trim();
+      
+      if (afterLabel.length > 3 && 
+          !afterLabel.includes('PETSA') && 
+          !afterLabel.includes('DATE') &&
+          !afterLabel.includes('BIRTH')) {
+        addressParts.push(afterLabel);
+      }
+      continue;
+    }
+    
+    // Collect address lines after the label (up to 3 lines)
+    if (foundAddressLabel && addressParts.length < 3 && i > addressStartIndex) {
+      // Stop conditions
+      if (line.includes('PETSA') || 
+          line.includes('DATE') ||
+          line.includes('BIRTH') ||
+          line.includes('KAPANGANAKAN') ||
+          line.includes('APELYIDO') ||
+          line.includes('PANGALAN') ||
+          line.includes('PHILSYS') ||
+          /^\d{4}[-\s]?\d{4}[-\s]?\d{4}/.test(line) ||
+          /[A-Z]+\s+\d{1,2},?\s+\d{4}/.test(line) ||
+          line.length < 3) {
+        break;
+      }
+      
+      // Skip label lines
+      if (line.includes('GITNANG') || 
+          line.includes('MIDDLE') ||
+          line.includes('LAST NAME') ||
+          line.includes('GIVEN')) {
+        continue;
+      }
+      
+      // Address-like patterns
+      const hasAddressIndicators = 
+        /\d/.test(line) ||
+        line.includes('ST') ||
+        line.includes('STREET') ||
+        line.includes('BRGY') ||
+        line.includes('BARANGAY') ||
+        line.includes('CITY') ||
+        line.includes('ZONE') ||
+        line.includes('PUROK') ||
+        line.includes('AVENUE') ||
+        line.includes('AVE') ||
+        line.includes('ROAD') ||
+        line.includes('RD') ||
+        line.includes('BLVD') ||
+        line.includes('BOULEVARD') ||
+        line.includes('DRIVE') ||
+        line.includes('SUBDIVISION') ||
+        line.includes('SUBD') ||
+        line.includes('VILLAGE') ||
+        line.includes('VILL') ||
+        line.includes('COMPOUND') ||
+        line.includes('BLDG') ||
+        line.includes('BUILDING') ||
+        line.includes('PHASE') ||
+        line.includes('BLOCK') ||
+        line.includes('LOT') ||
+        line.includes('FLOOR');
+      
+      if (hasAddressIndicators || 
+          (addressParts.length > 0 && line.length >= 3 && /^[A-Z0-9]/.test(line))) {
+        addressParts.push(line.trim());
+      }
+    }
+  }
+  
+  // Alternative: Look for address-like patterns without label
+  if (addressParts.length === 0) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Skip header/label/name/date lines
+      if (line.includes('PHILSYS') || 
+          line.includes('REPUBLIKA') ||
+          line.includes('REPUBLIC') ||
+          line.includes('APELYIDO') ||
+          line.includes('PANGALAN') ||
+          line.includes('GITNANG') ||
+          line.includes('PETSA') ||
+          line.includes('DATE') ||
+          line.includes('BIRTH') ||
+          line.includes('TIRAHAN') ||
+          line.includes('ADDRESS') ||
+          /^\d{4}[-\s]?\d{4}[-\s]?\d{4}/.test(line) ||
+          /^[A-Z]+\s+\d{1,2},?\s+\d{4}$/.test(line)) {
+        continue;
+      }
+      
+      // Look for street address pattern (number + text, or BRGY/BARANGAY)
+      const isStreetAddress = 
+        /^\d+[-\s]?[A-Z]?\s+[A-Z]/.test(line) ||
+        /^[A-Z]+\s+\d+/.test(line) ||
+        line.includes('BRGY') ||
+        line.includes('BARANGAY');
+      
+      if (isStreetAddress) {
+        addressParts.push(line.trim());
+        
+        // Get next 1-2 lines as continuation
+        for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+          const nextLine = lines[j];
+          if (nextLine.includes('PETSA') || 
+              nextLine.includes('DATE') ||
+              nextLine.includes('BIRTH') ||
+              nextLine.includes('PHILSYS') ||
+              /^\d{4}[-\s]?\d{4}/.test(nextLine) ||
+              /^[A-Z]+\s+\d{1,2},?\s+\d{4}$/.test(nextLine) ||
+              nextLine.length < 3) {
+            break;
+          }
+          
+          // Check if it looks like address continuation
+          if (/[A-Z0-9]/.test(nextLine) && nextLine.length >= 3) {
+            addressParts.push(nextLine.trim());
+          }
+        }
+        break;
+      }
+    }
+  }
+  
+  if (addressParts.length > 0) {
+    const fullAddress = addressParts.join(', ');
+    console.log('✅ Found Address:', fullAddress);
+    return fullAddress;
+  }
+  
+  console.log('❌ No PhilSys address found');
+  return null;
+};
